@@ -143,9 +143,9 @@ router.get("/summary/:userId", async (req, res) => {
     console.error("Summary Error:", error);
     res.status(500).json({ message: error.message });
   }
+});
 
-
-  router.get("/stability/:userId", async (req, res) => {
+router.get("/stability/:userId", async (req, res) => {
   try {
     const entries = await Souljar.find({ userId: req.params.userId });
 
@@ -176,6 +176,130 @@ router.get("/summary/:userId", async (req, res) => {
   }
 });
 
+router.get("/report", async (req, res) => {
+  try {
+    const { userId, category, date } = req.query;
+
+    if (!userId) {
+      return res.status(400).json({ message: "userId is required" });
+    }
+
+    const filters = { userId };
+
+    if (category && category !== "Random") {
+      filters.topic = category;
+    }
+
+    if (date) {
+      filters.stamp = date;
+    }
+
+    const entries = await Souljar.find(filters).sort({ createdAt: -1 });
+
+    const totalEntries = entries.length;
+    const totalWords = entries.reduce((sum, entry) => sum + (entry.wordCount || 0), 0);
+
+    const moodDistribution = {};
+    const activityDistribution = {};
+
+    entries.forEach((entry) => {
+      if (entry.mood) {
+        moodDistribution[entry.mood] = (moodDistribution[entry.mood] || 0) + 1;
+      }
+
+      if (entry.activity) {
+        activityDistribution[entry.activity] =
+          (activityDistribution[entry.activity] || 0) + 1;
+      }
+    });
+
+    res.json({
+      totalEntries,
+      totalWords,
+      category: category || "All",
+      date: date || "All",
+      moodDistribution,
+      activityDistribution,
+      latestEntries: entries.slice(0, 5),
+    });
+  } catch (error) {
+    console.error("Report Error:", error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+router.get("/summary-report/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { category, date } = req.query;
+
+    const filters = { userId };
+
+    if (category && category !== "Random") {
+      filters.topic = category;
+    }
+
+    if (date) {
+      filters.stamp = date;
+    }
+
+    const entries = await Souljar.find(filters).sort({ createdAt: -1 });
+
+    const totalEntries = entries.length;
+    const totalWords = entries.reduce(
+      (sum, entry) => sum + (entry.wordCount || 0),
+      0
+    );
+    const averageWords = totalEntries
+      ? Math.round(totalWords / totalEntries)
+      : 0;
+
+    const moodDistribution = {};
+    const activityDistribution = {};
+    const topicDistribution = {};
+
+    entries.forEach((entry) => {
+      if (entry.mood) {
+        moodDistribution[entry.mood] = (moodDistribution[entry.mood] || 0) + 1;
+      }
+
+      if (entry.activity) {
+        activityDistribution[entry.activity] =
+          (activityDistribution[entry.activity] || 0) + 1;
+      }
+
+      if (entry.topic) {
+        topicDistribution[entry.topic] = (topicDistribution[entry.topic] || 0) + 1;
+      }
+    });
+
+    const sadPercent = totalEntries ? (moodDistribution.Sad || 0) / totalEntries : 0;
+    const tiredPercent = totalEntries
+      ? (moodDistribution.Tired || 0) / totalEntries
+      : 0;
+    const stabilityScore = Math.max(
+      0,
+      Math.round(100 - sadPercent * 30 - tiredPercent * 20)
+    );
+
+    res.json({
+      userId,
+      category: category || "All",
+      date: date || "All",
+      totalEntries,
+      totalWords,
+      averageWords,
+      stabilityScore,
+      moodDistribution,
+      activityDistribution,
+      topicDistribution,
+      latestEntries: entries.slice(0, 5),
+      jarCodes: entries.slice(0, 10).map((entry) => entry.jarCode),
+    });
+  } catch (error) {
+    console.error("Summary Report Error:", error);
+    res.status(500).json({ message: error.message });
+  }
 });
 
 router.get("/insight/:userId", async (req, res) => {
