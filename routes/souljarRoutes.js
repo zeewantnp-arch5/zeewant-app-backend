@@ -39,6 +39,8 @@ router.post("/", async (req, res) => {
       anonymous,
       reflectionSeconds,
       ocrText,
+      imagePath,
+      attachmentNames,
     } = req.body;
 
     if (!userId || !text) {
@@ -60,6 +62,8 @@ router.post("/", async (req, res) => {
       anonymous,
       reflectionSeconds,
       ocrText,
+      imagePath,
+      attachmentNames,
       wordCount: text ? text.trim().split(/\s+/).length : 0,
     });
 

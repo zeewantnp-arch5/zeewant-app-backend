@@ -30,6 +30,10 @@ const souljarSchema = new mongoose.Schema(
 
     ocrText: String,
 
+    imagePath: String,
+
+    attachmentNames: [String],
+
     wordCount: Number,
   },
   { timestamps: true }
