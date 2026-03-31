@@ -416,26 +416,48 @@ router.get("/summary-report/:userId", async (req, res) => {
 router.get("/period-report/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    const { period = "daily", date, category } = req.query;
+    const { period = "daily", date, category, timezoneOffsetMinutes, dailyGranularity = "window" } = req.query;
 
-    const makeStartOfUtcDay = (d) => {
-      const day = new Date(d);
-      day.setUTCHours(0, 0, 0, 0);
-      return day;
-    };
+    const offsetMinutes = Number.isFinite(Number(timezoneOffsetMinutes))
+      ? Number(timezoneOffsetMinutes)
+      : 0;
 
-    const parsedDate = date ? new Date(`${date}T00:00:00.000Z`) : new Date();
-    const anchor = Number.isNaN(parsedDate.getTime()) ? new Date() : parsedDate;
+    const toLocal = (utcDate) =>
+      new Date(new Date(utcDate).getTime() + offsetMinutes * 60 * 1000);
+
+    const toUtcFromLocal = ({ year, month, day, hour = 0 }) =>
+      new Date(Date.UTC(year, month - 1, day, hour, 0, 0, 0) - offsetMinutes * 60 * 1000);
+
+    const nowLocal = toLocal(new Date());
+
+    const anchorLocal = (() => {
+      if (!date) {
+        return new Date(nowLocal.getFullYear(), nowLocal.getMonth(), nowLocal.getDate());
+      }
+
+      const parts = String(date).split("-").map((v) => Number(v));
+      if (parts.length !== 3 || parts.some((v) => Number.isNaN(v))) {
+        return new Date(nowLocal.getFullYear(), nowLocal.getMonth(), nowLocal.getDate());
+      }
+
+      return new Date(parts[0], parts[1] - 1, parts[2]);
+    })();
 
     let start;
     let end;
     let slots;
 
     if (period === "weekly") {
-      const dayOfWeek = anchor.getUTCDay();
+      const dayOfWeek = anchorLocal.getDay();
       const daysSinceMonday = (dayOfWeek + 6) % 7;
-      start = makeStartOfUtcDay(anchor);
-      start.setUTCDate(start.getUTCDate() - daysSinceMonday);
+      const weekStartLocal = new Date(anchorLocal);
+      weekStartLocal.setDate(weekStartLocal.getDate() - daysSinceMonday);
+
+      start = toUtcFromLocal({
+        year: weekStartLocal.getFullYear(),
+        month: weekStartLocal.getMonth() + 1,
+        day: weekStartLocal.getDate(),
+      });
       end = new Date(start);
       end.setUTCDate(end.getUTCDate() + 7);
 
@@ -447,22 +469,35 @@ router.get("/period-report/:userId", async (req, res) => {
         words: 0,
       }));
     } else {
-      start = makeStartOfUtcDay(anchor);
+      start = toUtcFromLocal({
+        year: anchorLocal.getFullYear(),
+        month: anchorLocal.getMonth() + 1,
+        day: anchorLocal.getDate(),
+      });
       end = new Date(start);
       end.setUTCDate(end.getUTCDate() + 1);
 
-      const toHourLabel = (h) => {
-        const suffix = h >= 12 ? "PM" : "AM";
-        const hour12 = h % 12 === 0 ? 12 : h % 12;
-        return `${hour12}${suffix}`;
-      };
+      if (String(dailyGranularity).toLowerCase() === "hourly") {
+        const toHourLabel = (h) => {
+          const suffix = h >= 12 ? "PM" : "AM";
+          const hour12 = h % 12 === 0 ? 12 : h % 12;
+          return `${hour12}${suffix}`;
+        };
 
-      slots = Array.from({ length: 24 }, (_, h) => ({
-        index: h,
-        label: toHourLabel(h),
-        entries: 0,
-        words: 0,
-      }));
+        slots = Array.from({ length: 24 }, (_, h) => ({
+          index: h,
+          label: toHourLabel(h),
+          entries: 0,
+          words: 0,
+        }));
+      } else {
+        slots = [
+          { index: 0, label: "Morning (05:00 - 11:59)", entries: 0, words: 0 },
+          { index: 1, label: "Afternoon (12:00 - 16:59)", entries: 0, words: 0 },
+          { index: 2, label: "Evening (17:00 - 20:59)", entries: 0, words: 0 },
+          { index: 3, label: "Night (21:00 - 04:59)", entries: 0, words: 0 },
+        ];
+      }
     }
 
     const filters = {
@@ -477,13 +512,26 @@ router.get("/period-report/:userId", async (req, res) => {
     const entries = await Souljar.find(filters).sort({ createdAt: 1 });
 
     entries.forEach((entry) => {
-      const timestamp = new Date(entry.createdAt);
+      const timestampLocal = toLocal(entry.createdAt);
       let slotIndex;
 
       if (period === "weekly") {
-        slotIndex = (timestamp.getUTCDay() + 6) % 7;
+        slotIndex = (timestampLocal.getDay() + 6) % 7;
       } else {
-        slotIndex = timestamp.getUTCHours();
+        if (String(dailyGranularity).toLowerCase() === "hourly") {
+          slotIndex = timestampLocal.getHours();
+        } else {
+          const h = timestampLocal.getHours();
+          if (h >= 5 && h < 12) {
+            slotIndex = 0;
+          } else if (h >= 12 && h < 17) {
+            slotIndex = 1;
+          } else if (h >= 17 && h < 21) {
+            slotIndex = 2;
+          } else {
+            slotIndex = 3;
+          }
+        }
       }
 
       if (slots[slotIndex]) {
@@ -495,12 +543,24 @@ router.get("/period-report/:userId", async (req, res) => {
     const totalEntries = entries.length;
     const totalWords = entries.reduce((sum, e) => sum + (e.wordCount || 0), 0);
 
+    const currentWindow = (() => {
+      if (period !== "daily") return null;
+      const h = nowLocal.getHours();
+      if (h >= 5 && h < 12) return "Morning (05:00 - 11:59)";
+      if (h >= 12 && h < 17) return "Afternoon (12:00 - 16:59)";
+      if (h >= 17 && h < 21) return "Evening (17:00 - 20:59)";
+      return "Night (21:00 - 04:59)";
+    })();
+
     res.json({
       userId,
       period,
       category: category || "All",
+      timezoneOffsetMinutes: offsetMinutes,
       rangeStart: start.toISOString(),
       rangeEnd: end.toISOString(),
+      localNow: nowLocal.toISOString(),
+      currentWindow,
       totalEntries,
       totalWords,
       slots,
