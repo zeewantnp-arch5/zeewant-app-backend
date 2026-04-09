@@ -8,6 +8,7 @@ import soulteeRoutes from "./routes/soulteeRoutes.js";
 import souljarRoutes from "./routes/souljarRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
 import settingsRoutes from "./routes/settingsRoutes.js";
+import soulpanaRoutes from "./routes/soulpanaRoutes.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -23,6 +24,7 @@ app.use("/api/souljar", souljarRoutes);
 app.use("/api/soultees", soulteeRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/settings", settingsRoutes);
+app.use("/api/soulpana", soulpanaRoutes);
 app.use(express.static(join(__dirname, "public")));
 
 app.get("/", (req, res) => {
