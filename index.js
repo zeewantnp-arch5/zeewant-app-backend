@@ -14,6 +14,7 @@ import soulpanaRoutes from "./routes/soulpanaRoutes.js";
 import soulteeDashboardRoutes from "./routes/soulteeDashboardRoutes.js";
 import chatRoutes from "./routes/chatRoutes.js";
 import Message from "./models/Message.js";
+import Soultee from "./models/Soultee.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -28,8 +29,39 @@ const io = new Server(httpServer, {
   cors: { origin: "*", methods: ["GET", "POST"] },
 });
 
+// Track which socket belongs to which soultee (socketId → firebaseUid)
+const soulteePresence = new Map();
+
+// Helper: update status in DB and broadcast to all clients
+async function setSoulteeStatus(uid, status) {
+  try {
+    await Soultee.findOneAndUpdate({ firebaseUid: uid }, { status });
+    io.emit("soultee_status_changed", { uid, status });
+  } catch (err) {
+    console.error("Presence update error:", err.message);
+  }
+}
+
 io.on("connection", (socket) => {
   console.log(`🔌 Socket connected: ${socket.id}`);
+
+  // ── SOULTEE PRESENCE — called right after soultee app opens ───────────────
+  socket.on("soultee_go_online", async ({ uid, name }) => {
+    soulteePresence.set(socket.id, uid);
+    socket.data.soulteeUid = uid;
+    console.log(`🟢 Soultee online: ${name} (${uid})`);
+    await setSoulteeStatus(uid, "online");
+  });
+
+  socket.on("soultee_set_busy", async ({ uid }) => {
+    await setSoulteeStatus(uid, "busy");
+  });
+
+  socket.on("soultee_go_offline", async ({ uid }) => {
+    soulteePresence.delete(socket.id);
+    console.log(`🔴 Soultee offline: ${uid}`);
+    await setSoulteeStatus(uid, "offline");
+  });
 
   // ── Join a session room (roomId = StudentSoulteeLink _id) ──────────────────
   socket.on("join_room", ({ roomId, userId, userName }) => {
@@ -45,12 +77,7 @@ io.on("connection", (socket) => {
     try {
       const msg = await Message.create({ roomId, senderId, senderName, senderRole, text });
       io.to(roomId).emit("new_message", {
-        _id: msg._id,
-        roomId,
-        senderId,
-        senderName,
-        senderRole,
-        text,
+        _id: msg._id, roomId, senderId, senderName, senderRole, text,
         createdAt: msg.createdAt,
       });
     } catch (err) {
@@ -62,32 +89,21 @@ io.on("connection", (socket) => {
   socket.on("typing",      ({ roomId, senderId }) => socket.to(roomId).emit("user_typing",      senderId));
   socket.on("stop_typing", ({ roomId, senderId }) => socket.to(roomId).emit("user_stop_typing", senderId));
 
-  // ── WebRTC signaling — audio / video calls ─────────────────────────────────
-  // Caller sends offer
-  socket.on("call_offer", ({ roomId, offer, callType }) => {
-    socket.to(roomId).emit("call_offer", { offer, callType, callerId: socket.data.userId });
-  });
+  // ── WebRTC signaling ───────────────────────────────────────────────────────
+  socket.on("call_offer",    ({ roomId, offer, callType }) => socket.to(roomId).emit("call_offer",    { offer, callType, callerId: socket.data.userId }));
+  socket.on("call_answer",   ({ roomId, answer })          => socket.to(roomId).emit("call_answer",   { answer }));
+  socket.on("ice_candidate", ({ roomId, candidate })       => socket.to(roomId).emit("ice_candidate", { candidate }));
+  socket.on("end_call",      ({ roomId })                  => io.to(roomId).emit("call_ended"));
+  socket.on("reject_call",   ({ roomId })                  => socket.to(roomId).emit("call_rejected"));
 
-  // Callee sends answer
-  socket.on("call_answer", ({ roomId, answer }) => {
-    socket.to(roomId).emit("call_answer", { answer });
-  });
-
-  // ICE candidates exchange
-  socket.on("ice_candidate", ({ roomId, candidate }) => {
-    socket.to(roomId).emit("ice_candidate", { candidate });
-  });
-
-  // End call / reject call
-  socket.on("end_call", ({ roomId }) => {
-    io.to(roomId).emit("call_ended");
-  });
-
-  socket.on("reject_call", ({ roomId }) => {
-    socket.to(roomId).emit("call_rejected");
-  });
-
-  socket.on("disconnect", () => {
+  // ── Disconnect — auto set soultee offline ──────────────────────────────────
+  socket.on("disconnect", async () => {
+    const soulteeUid = soulteePresence.get(socket.id);
+    if (soulteeUid) {
+      soulteePresence.delete(socket.id);
+      console.log(`🔴 Soultee disconnected → offline: ${soulteeUid}`);
+      await setSoulteeStatus(soulteeUid, "offline");
+    }
     console.log(`❌ Socket disconnected: ${socket.id}`);
   });
 });
