@@ -39,6 +39,13 @@ async function setSoulteeStatus(io, uid, status) {
   io.emit("soultee_status_changed", { uid, status });
 }
 
+export async function resetRealtimePresenceState() {
+  await Soultee.updateMany(
+    { status: { $in: ["online", "busy"] } },
+    { $set: { status: "offline" } }
+  );
+}
+
 function setStudentStatus(io, uid, status) {
   io.emit("student_status_changed", { uid, status });
 }

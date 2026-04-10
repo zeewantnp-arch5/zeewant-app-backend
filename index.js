@@ -15,12 +15,11 @@ import createSoulteeDashboardRoutes from "./routes/soulteeDashboardRoutes.js";
 import chatRoutes from "./routes/chatRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
 import "./config/firebase.js"; // initialise Firebase Admin on startup
-import { registerRealtimeServer } from "./sockets/realtimeServer.js";
+import { registerRealtimeServer, resetRealtimePresenceState } from "./sockets/realtimeServer.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 dotenv.config();
-connectDB();
 
 const app = express();
 const httpServer = createServer(app);
@@ -49,6 +48,17 @@ app.use(express.static(join(__dirname, "public")));
 app.get("/", (req, res) => res.send("Zeewant Backend Running..."));
 
 const PORT = process.env.PORT || 5000;
-httpServer.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+
+async function startServer() {
+  await connectDB();
+  await resetRealtimePresenceState();
+
+  httpServer.listen(PORT, "0.0.0.0", () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+  });
+}
+
+startServer().catch((error) => {
+  console.error("Server startup failed:", error.message);
+  process.exit(1);
 });
