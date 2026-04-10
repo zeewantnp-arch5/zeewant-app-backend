@@ -2,6 +2,7 @@ import Message from "../models/Message.js";
 import Soultee from "../models/Soultee.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import { buildPersonalRoom } from "../services/notificationService.js";
+import { createPersistentMessage, serializeMessage } from "../services/messageService.js";
 
 function emitSocketError(socket, message, details = {}) {
   socket.emit("socket_error", { message, ...details });
@@ -199,7 +200,7 @@ export function registerRealtimeServer(io) {
       }
 
       try {
-        const message = await Message.create({
+        const { message } = await createPersistentMessage({
           roomId,
           senderId,
           senderName,
@@ -208,16 +209,7 @@ export function registerRealtimeServer(io) {
           type,
         });
 
-        io.to(roomId).emit("new_message", {
-          _id: message._id,
-          roomId,
-          senderId,
-          senderName,
-          senderRole: message.senderRole,
-          text: message.text,
-          type: message.type,
-          createdAt: message.createdAt,
-        });
+        io.to(roomId).emit("new_message", serializeMessage(message));
       } catch (err) {
         emitSocketError(socket, err.message, { roomId });
       }

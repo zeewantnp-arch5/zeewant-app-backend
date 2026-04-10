@@ -5,6 +5,11 @@ import Session from "../models/Session.js";
 import Souljar from "../models/souljar.js";
 import Soulpana from "../models/Soulpana.js";
 import { getStudentConnections } from "../services/connectionService.js";
+import {
+  createPersistentMessage,
+  getRoomMessageMetadata,
+  getUnreadMessageSummary,
+} from "../services/messageService.js";
 import { createNotification, emitToUser } from "../services/notificationService.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -117,7 +122,19 @@ export default function createSoulteeDashboardRoutes(io) {
           }),
         ]);
 
-      res.json({ activeStudents, pendingRequests, todaySessions, upcomingSessions });
+      const { totalUnreadMessages } = await getUnreadMessageSummary({
+        userId: soulteeUid,
+        userRole: "soultee",
+      });
+
+      res.json({
+        activeStudents,
+        pendingRequests,
+        todaySessions,
+        upcomingSessions,
+        unreadMessages: totalUnreadMessages,
+        notificationBadgeCount: pendingRequests + totalUnreadMessages,
+      });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
@@ -167,6 +184,17 @@ export default function createSoulteeDashboardRoutes(io) {
         });
       }
 
+      if (String(requestMessage || "").trim()) {
+        await createPersistentMessage({
+          roomId: String(link._id),
+          senderId: studentFirebaseUid,
+          senderName: studentName || "Student",
+          senderRole: "student",
+          text: requestMessage,
+          allowPending: true,
+        });
+      }
+
       // Real-time: tell the soultee a new request arrived (for request list update)
       io.to(`soultee:${soulteeFirebaseUid}`).emit("new_connection_request", {
         linkId:            link._id,
@@ -208,9 +236,26 @@ export default function createSoulteeDashboardRoutes(io) {
       const requests = await StudentSoulteeLink.find({
         soulteeFirebaseUid: req.params.soulteeUid,
         status: "pending",
-      }).sort({ requestedAt: -1 });
+      })
+        .sort({ requestedAt: -1 })
+        .lean();
 
-      res.json({ requests, total: requests.length });
+      const metadataByRoom = await getRoomMessageMetadata({
+        roomIds: requests.map((request) => String(request._id)),
+        recipientUid: req.params.soulteeUid,
+        recipientRole: "soultee",
+      });
+
+      const enrichedRequests = requests.map((request) => {
+        const metadata = metadataByRoom.get(String(request._id)) || {};
+        return {
+          ...request,
+          latestMessage: metadata.latestMessage || null,
+          unreadMessageCount: metadata.unreadCount || 0,
+        };
+      });
+
+      res.json({ requests: enrichedRequests, total: enrichedRequests.length });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
@@ -396,7 +441,22 @@ export default function createSoulteeDashboardRoutes(io) {
         })
       );
 
-      res.json({ students, total: students.length });
+      const metadataByRoom = await getRoomMessageMetadata({
+        roomIds: students.map((student) => student.roomId),
+        recipientUid: req.params.soulteeUid,
+        recipientRole: "soultee",
+      });
+
+      const enrichedStudents = students.map((student) => {
+        const metadata = metadataByRoom.get(student.roomId) || {};
+        return {
+          ...student,
+          latestMessage: metadata.latestMessage || null,
+          unreadMessageCount: metadata.unreadCount || 0,
+        };
+      });
+
+      res.json({ students: enrichedStudents, total: enrichedStudents.length });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }

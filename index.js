@@ -12,7 +12,7 @@ import adminRoutes from "./routes/adminRoutes.js";
 import settingsRoutes from "./routes/settingsRoutes.js";
 import soulpanaRoutes from "./routes/soulpanaRoutes.js";
 import createSoulteeDashboardRoutes from "./routes/soulteeDashboardRoutes.js";
-import chatRoutes from "./routes/chatRoutes.js";
+import createChatRoutes from "./routes/chatRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
 import "./config/firebase.js"; // initialise Firebase Admin on startup
 import { registerRealtimeServer, resetRealtimePresenceState } from "./sockets/realtimeServer.js";
@@ -41,7 +41,7 @@ app.use("/api/admin",             adminRoutes);
 app.use("/api/settings",          settingsRoutes);
 app.use("/api/soulpana",          soulpanaRoutes);
 app.use("/api/soultee-dashboard", createSoulteeDashboardRoutes(io));
-app.use("/api/chat",              chatRoutes);
+app.use("/api/chat",              createChatRoutes(io));
 app.use("/api/notifications",     notificationRoutes);
 app.use(express.static(join(__dirname, "public")));
 
