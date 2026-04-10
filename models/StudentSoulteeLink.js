@@ -32,4 +32,8 @@ studentSoulteeLinkSchema.index(
   { unique: true }
 );
 
+studentSoulteeLinkSchema.index({ studentFirebaseUid: 1, status: 1, requestedAt: -1 });
+studentSoulteeLinkSchema.index({ soulteeFirebaseUid: 1, status: 1, requestedAt: -1 });
+studentSoulteeLinkSchema.index({ soulteeFirebaseUid: 1, acceptedAt: -1 });
+
 export default mongoose.model("StudentSoulteeLink", studentSoulteeLinkSchema);

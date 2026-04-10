@@ -4,70 +4,27 @@ import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import Session from "../models/Session.js";
 import Souljar from "../models/souljar.js";
 import Soulpana from "../models/Soulpana.js";
-import FCMToken from "../models/FCMToken.js";
-import Notification from "../models/Notification.js";
-import { sendPushNotification } from "../config/firebase.js";
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Save a notification to MongoDB and push it to the recipient's socket room.
- * Also sends an FCM push so the user sees it even when the app is closed.
- *
- * @param {import('socket.io').Server} io
- * @param {{ recipientUid, recipientRole, type, title, body, data? }} opts
- */
-async function createNotification(io, { recipientUid, recipientRole, type, title, body, data = {} }) {
-  // 1. Persist to DB
-  const notif = await Notification.create({
-    recipientUid,
-    recipientRole,
-    type,
-    title,
-    body,
-    data,
-  });
-
-  // 2. Real-time socket push (works instantly if the user is online)
-  const room = recipientRole === "soultee" ? `soultee:${recipientUid}` : `student:${recipientUid}`;
-  io.to(room).emit("new_notification", {
-    _id:          notif._id,
-    type:         notif.type,
-    title:        notif.title,
-    body:         notif.body,
-    data:         Object.fromEntries(notif.data),
-    read:         notif.read,
-    createdAt:    notif.createdAt,
-  });
-
-  // 3. FCM push (works when app is in background or closed)
-  try {
-    const tokenRecord = await FCMToken.findOne({ uid: recipientUid }).lean();
-    if (tokenRecord) {
-      const stringData = Object.fromEntries(
-        Object.entries(data).map(([k, v]) => [k, String(v)])
-      );
-      await sendPushNotification(tokenRecord.token, title, body, stringData);
-    }
-  } catch (err) {
-    if (
-      err.code === "messaging/registration-token-not-registered" ||
-      err.code === "messaging/invalid-registration-token"
-    ) {
-      await FCMToken.deleteOne({ uid: recipientUid });
-    }
-  }
-
-  return notif;
-}
+import { getStudentConnections } from "../services/connectionService.js";
+import { createNotification, emitToUser } from "../services/notificationService.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Factory — receives io so every route handler can emit socket events
 // ─────────────────────────────────────────────────────────────────────────────
 export default function createSoulteeDashboardRoutes(io) {
   const router = express.Router();
+
+  // ───────────────────────────────────────────────────────────────────────────
+  //  STUDENT — get all accepted Soultee connections
+  //  GET /api/soultee-dashboard/connections/:studentUid
+  // ───────────────────────────────────────────────────────────────────────────
+  router.get("/connections/:studentUid", async (req, res) => {
+    try {
+      const connections = await getStudentConnections(req.params.studentUid);
+      res.json({ connections, total: connections.length });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
 
   // ───────────────────────────────────────────────────────────────────────────
   //  STUDENT — get all my requests (status per soultee)
@@ -281,13 +238,28 @@ export default function createSoulteeDashboardRoutes(io) {
       const roomId = link._id.toString();
 
       // Real-time: tell the student their request was accepted (triggers UI update)
-      io.to(`student:${studentUid}`).emit("connection_accepted", {
+      const acceptedPayload = {
         linkId:             link._id,
         soulteeFirebaseUid: soulteeUid,
         roomId,
+        soulteeName:        soultee?.name         || "Your Soultee",
         solteeName:         soultee?.name         || "Your Soultee",
         soulteeProfileImage: soultee?.profileImage || null,
         acceptedAt:         link.acceptedAt,
+      };
+
+      emitToUser(io, "student", studentUid, "connection_accepted", acceptedPayload);
+      emitToUser(io, "student", studentUid, "connection_request_updated", {
+        linkId: link._id,
+        status: "active",
+        roomId,
+        soulteeFirebaseUid: soulteeUid,
+      });
+      emitToUser(io, "soultee", soulteeUid, "connection_request_updated", {
+        linkId: link._id,
+        status: "active",
+        studentFirebaseUid: studentUid,
+        roomId,
       });
 
       // Persist notification + emit new_notification + FCM push
@@ -302,6 +274,7 @@ export default function createSoulteeDashboardRoutes(io) {
           linkId:             roomId,
           roomId,
           soulteeFirebaseUid: soulteeUid,
+          soulteeName:        soultee?.name || "Your Soultee",
           solteeName:         soultee?.name || "Your Soultee",
         },
       });
@@ -332,10 +305,23 @@ export default function createSoulteeDashboardRoutes(io) {
         .lean();
 
       // Real-time: tell the student their request was declined
-      io.to(`student:${studentUid}`).emit("connection_declined", {
+      const declinedPayload = {
         linkId:             link._id,
         soulteeFirebaseUid: soulteeUid,
+        soulteeName:        soultee?.name || "Your Soultee",
         solteeName:         soultee?.name || "Your Soultee",
+      };
+
+      emitToUser(io, "student", studentUid, "connection_declined", declinedPayload);
+      emitToUser(io, "student", studentUid, "connection_request_updated", {
+        linkId: link._id,
+        status: "declined",
+        soulteeFirebaseUid: soulteeUid,
+      });
+      emitToUser(io, "soultee", soulteeUid, "connection_request_updated", {
+        linkId: link._id,
+        status: "declined",
+        studentFirebaseUid: studentUid,
       });
 
       // Persist notification + emit new_notification + FCM push
@@ -349,6 +335,7 @@ export default function createSoulteeDashboardRoutes(io) {
           type:               "connection_declined",
           linkId:             link._id.toString(),
           soulteeFirebaseUid: soulteeUid,
+          soulteeName:        soultee?.name || "Your Soultee",
           solteeName:         soultee?.name || "Your Soultee",
         },
       });

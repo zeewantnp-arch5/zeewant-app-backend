@@ -1,5 +1,6 @@
 import express from "express";
 import Soultee from "../models/Soultee.js";
+import { getSoulteeDirectory } from "../services/connectionService.js";
 
 const router = express.Router();
 
@@ -12,10 +13,7 @@ router.get("/", async (req, res) => {
     if (req.query.gender)         filter.gender         = req.query.gender;
     if (req.query.specialization) filter.specialization = new RegExp(req.query.specialization, "i");
 
-    const soultees = await Soultee.find(filter)
-      .select("-__v")
-      .sort({ rating: -1 })
-      .lean();
+    const soultees = await getSoulteeDirectory(req.query.studentUid, filter);
 
     res.json(soultees);
   } catch (error) {
