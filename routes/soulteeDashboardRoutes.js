@@ -103,8 +103,11 @@ export default function createSoulteeDashboardRoutes(io) {
     try {
       const { soulteeUid } = req.params;
 
-      const [activeStudents, pendingRequests, todaySessions, upcomingSessions] =
+      const [soultee, activeStudents, pendingRequests, todaySessions, upcomingSessions] =
         await Promise.all([
+          Soultee.findOne({ firebaseUid: soulteeUid })
+            .select("rating totalFeedbacks feePerSession")
+            .lean(),
           StudentSoulteeLink.countDocuments({ soulteeFirebaseUid: soulteeUid, status: "active" }),
           StudentSoulteeLink.countDocuments({ soulteeFirebaseUid: soulteeUid, status: "pending" }),
           Session.countDocuments({
@@ -122,17 +125,70 @@ export default function createSoulteeDashboardRoutes(io) {
           }),
         ]);
 
+      const defaultSessionFee = Number(soultee?.feePerSession || 0);
+
+      const [earningsSummary] = await Session.aggregate([
+        {
+          $match: {
+            soulteeFirebaseUid: soulteeUid,
+            status: { $in: ["upcoming", "ongoing", "completed"] },
+          },
+        },
+        {
+          $project: {
+            status: 1,
+            effectiveFee: {
+              $ifNull: ["$sessionFee", defaultSessionFee],
+            },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            completedSessions: {
+              $sum: {
+                $cond: [{ $eq: ["$status", "completed"] }, 1, 0],
+              },
+            },
+            earningsReceived: {
+              $sum: {
+                $cond: [{ $eq: ["$status", "completed"] }, "$effectiveFee", 0],
+              },
+            },
+            earningsToBeReceived: {
+              $sum: {
+                $cond: [
+                  { $in: ["$status", ["upcoming", "ongoing"]] },
+                  "$effectiveFee",
+                  0,
+                ],
+              },
+            },
+          },
+        },
+      ]);
+
       const { totalUnreadMessages } = await getUnreadMessageSummary({
         userId: soulteeUid,
         userRole: "soultee",
       });
 
+      const completedSessions = earningsSummary?.completedSessions ?? 0;
+      const earningsReceived = earningsSummary?.earningsReceived ?? 0;
+      const earningsToBeReceived = earningsSummary?.earningsToBeReceived ?? 0;
+
       res.json({
+        completedSessions,
         activeStudents,
         pendingRequests,
         todaySessions,
         upcomingSessions,
+        walletBalance: earningsReceived,
+        earningsReceived,
+        earningsToBeReceived,
         unreadMessages: totalUnreadMessages,
+        rating: soultee?.rating ?? 0,
+        totalFeedbacks: soultee?.totalFeedbacks ?? 0,
         notificationBadgeCount: pendingRequests + totalUnreadMessages,
       });
     } catch (err) {
@@ -557,6 +613,10 @@ export default function createSoulteeDashboardRoutes(io) {
         return res.status(400).json({ message: "studentFirebaseUid and scheduledAt are required" });
       }
 
+      const soultee = await Soultee.findOne({ firebaseUid: req.params.soulteeUid })
+        .select("name feePerSession")
+        .lean();
+
       const session = await Session.create({
         soulteeFirebaseUid: req.params.soulteeUid,
         studentFirebaseUid,
@@ -564,13 +624,10 @@ export default function createSoulteeDashboardRoutes(io) {
         scheduledAt:      new Date(scheduledAt),
         durationMinutes:  durationMinutes || 60,
         sessionType:      sessionType || "chat",
+        sessionFee:       Number(soultee?.feePerSession || 0),
       });
 
       // Notify student about the scheduled session
-      const soultee = await Soultee.findOne({ firebaseUid: req.params.soulteeUid })
-        .select("name")
-        .lean();
-
       await createNotification(io, {
         recipientUid:  studentFirebaseUid,
         recipientRole: "student",

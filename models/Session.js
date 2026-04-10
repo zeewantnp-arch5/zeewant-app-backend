@@ -8,6 +8,7 @@ const sessionSchema = new mongoose.Schema(
 
     scheduledAt: { type: Date, required: true },
     durationMinutes: { type: Number, default: 60 },
+    sessionFee: { type: Number, default: 0 },
 
     // upcoming | ongoing | completed | cancelled
     status: {
