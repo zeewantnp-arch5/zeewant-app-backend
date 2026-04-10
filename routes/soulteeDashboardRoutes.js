@@ -8,6 +8,23 @@ import Soulpana from "../models/Soulpana.js";
 const router = express.Router();
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  STUDENT — get all my requests (to know status per soultee)
+//  GET /api/soultee-dashboard/my-requests/:studentUid
+// ─────────────────────────────────────────────────────────────────────────────
+router.get("/my-requests/:studentUid", async (req, res) => {
+  try {
+    const links = await StudentSoulteeLink.find({
+      studentFirebaseUid: req.params.studentUid,
+    })
+      .select("soulteeFirebaseUid soulteeMongoId status requestedAt acceptedAt _id")
+      .lean();
+    res.json({ requests: links });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  SOULTEE REGISTRATION / PROFILE SYNC
 //  Called when a soultee logs in via Firebase for the first time
 //  POST /api/soultee-dashboard/register
