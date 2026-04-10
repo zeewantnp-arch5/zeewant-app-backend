@@ -13,8 +13,10 @@ import settingsRoutes from "./routes/settingsRoutes.js";
 import soulpanaRoutes from "./routes/soulpanaRoutes.js";
 import createSoulteeDashboardRoutes from "./routes/soulteeDashboardRoutes.js";
 import chatRoutes from "./routes/chatRoutes.js";
+import notificationRoutes from "./routes/notificationRoutes.js";
 import Message from "./models/Message.js";
 import Soultee from "./models/Soultee.js";
+import "./config/firebase.js"; // initialise Firebase Admin on startup
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -137,6 +139,7 @@ app.use("/api/settings",          settingsRoutes);
 app.use("/api/soulpana",          soulpanaRoutes);
 app.use("/api/soultee-dashboard", createSoulteeDashboardRoutes(io));
 app.use("/api/chat",              chatRoutes);
+app.use("/api/notifications",     notificationRoutes);
 app.use(express.static(join(__dirname, "public")));
 
 app.get("/", (req, res) => res.send("Zeewant Backend Running..."));

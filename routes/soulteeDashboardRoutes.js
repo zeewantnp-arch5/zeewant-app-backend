@@ -4,6 +4,25 @@ import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import Session from "../models/Session.js";
 import Souljar from "../models/souljar.js";
 import Soulpana from "../models/Soulpana.js";
+import FCMToken from "../models/FCMToken.js";
+import { sendPushNotification } from "../config/firebase.js";
+
+// Helper: look up token and send FCM; silently skips if no token saved
+async function notify(uid, title, body, data = {}) {
+  try {
+    const record = await FCMToken.findOne({ uid }).lean();
+    if (!record) return;
+    await sendPushNotification(record.token, title, body, data);
+  } catch (err) {
+    // Stale token — remove it so we don't keep trying
+    if (
+      err.code === "messaging/registration-token-not-registered" ||
+      err.code === "messaging/invalid-registration-token"
+    ) {
+      await FCMToken.deleteOne({ uid });
+    }
+  }
+}
 
 // Factory: accepts the Socket.io instance so routes can emit real-time events
 export default function createSoulteeDashboardRoutes(io) {
@@ -159,6 +178,14 @@ router.post("/request", async (req, res) => {
         requestedAt: existing.requestedAt,
       });
 
+      // FCM push — reaches soultee even when app is in background/closed
+      await notify(
+        soulteeFirebaseUid,
+        "New Connection Request",
+        `${studentName || "A student"} wants to connect with you`,
+        { type: "connection_request", linkId: existing._id.toString(), studentFirebaseUid }
+      );
+
       return res.status(200).json({ message: "Re-request sent successfully", link: existing });
     }
 
@@ -170,7 +197,7 @@ router.post("/request", async (req, res) => {
       requestMessage: requestMessage || "",
     });
 
-    // Notify the soultee in real-time (whether online or offline — queued when they reconnect)
+    // Socket — real-time if soultee is online
     io.to(`soultee:${soulteeFirebaseUid}`).emit("new_connection_request", {
       linkId: link._id,
       studentFirebaseUid,
@@ -178,6 +205,14 @@ router.post("/request", async (req, res) => {
       requestMessage: requestMessage || "",
       requestedAt: link.requestedAt,
     });
+
+    // FCM push — reaches soultee even when app is in background/closed
+    await notify(
+      soulteeFirebaseUid,
+      "New Connection Request",
+      `${studentName || "A student"} wants to connect with you`,
+      { type: "connection_request", linkId: link._id.toString(), studentFirebaseUid }
+    );
 
     res.status(201).json({ message: "Request sent successfully", link });
   } catch (err) {
@@ -222,7 +257,7 @@ router.patch("/:soulteeUid/requests/:studentUid/accept", async (req, res) => {
     // Fetch soultee name to include in the notification
     const soultee = await Soultee.findOne({ firebaseUid: soulteeUid }).select("name profileImage").lean();
 
-    // Notify the student in real-time
+    // Socket — real-time if student is online
     io.to(`student:${studentUid}`).emit("connection_accepted", {
       linkId: link._id,
       soulteeFirebaseUid: soulteeUid,
@@ -231,6 +266,14 @@ router.patch("/:soulteeUid/requests/:studentUid/accept", async (req, res) => {
       soulteeProfileImage: soultee?.profileImage || null,
       acceptedAt: link.acceptedAt,
     });
+
+    // FCM push — reaches student even when app is closed
+    await notify(
+      studentUid,
+      "Request Accepted! 🎉",
+      `${soultee?.name || "Your Soultee"} accepted your connection request`,
+      { type: "connection_accepted", linkId: link._id.toString(), roomId: link._id.toString(), soulteeFirebaseUid: soulteeUid }
+    );
 
     res.json({ message: "Student accepted", link });
   } catch (err) {
@@ -252,12 +295,20 @@ router.patch("/:soulteeUid/requests/:studentUid/decline", async (req, res) => {
 
     const soultee = await Soultee.findOne({ firebaseUid: soulteeUid }).select("name").lean();
 
-    // Notify the student in real-time
+    // Socket — real-time if student is online
     io.to(`student:${studentUid}`).emit("connection_declined", {
       linkId: link._id,
       soulteeFirebaseUid: soulteeUid,
       solteeName: soultee?.name || "Your Soultee",
     });
+
+    // FCM push — reaches student even when app is closed
+    await notify(
+      studentUid,
+      "Connection Request Declined",
+      `${soultee?.name || "Your Soultee"} declined your request`,
+      { type: "connection_declined", linkId: link._id.toString(), soulteeFirebaseUid: soulteeUid }
+    );
 
     res.json({ message: "Request declined", link });
   } catch (err) {
