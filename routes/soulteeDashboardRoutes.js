@@ -5,6 +5,8 @@ import Session from "../models/Session.js";
 import Souljar from "../models/souljar.js";
 import Soulpana from "../models/Soulpana.js";
 
+// Factory: accepts the Socket.io instance so routes can emit real-time events
+export default function createSoulteeDashboardRoutes(io) {
 const router = express.Router();
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -148,6 +150,15 @@ router.post("/request", async (req, res) => {
       existing.acceptedAt = undefined;
       existing.endedAt = undefined;
       await existing.save();
+
+      io.to(`soultee:${soulteeFirebaseUid}`).emit("new_connection_request", {
+        linkId: existing._id,
+        studentFirebaseUid,
+        studentName: studentName || "Student",
+        requestMessage: requestMessage || "",
+        requestedAt: existing.requestedAt,
+      });
+
       return res.status(200).json({ message: "Re-request sent successfully", link: existing });
     }
 
@@ -157,6 +168,15 @@ router.post("/request", async (req, res) => {
       soulteeFirebaseUid,
       soulteeMongoId: soultee._id,
       requestMessage: requestMessage || "",
+    });
+
+    // Notify the soultee in real-time (whether online or offline — queued when they reconnect)
+    io.to(`soultee:${soulteeFirebaseUid}`).emit("new_connection_request", {
+      linkId: link._id,
+      studentFirebaseUid,
+      studentName: studentName || "Student",
+      requestMessage: requestMessage || "",
+      requestedAt: link.requestedAt,
     });
 
     res.status(201).json({ message: "Request sent successfully", link });
@@ -189,17 +209,29 @@ router.get("/:soulteeUid/requests", async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.patch("/:soulteeUid/requests/:studentUid/accept", async (req, res) => {
   try {
+    const { soulteeUid, studentUid } = req.params;
+
     const link = await StudentSoulteeLink.findOneAndUpdate(
-      {
-        soulteeFirebaseUid: req.params.soulteeUid,
-        studentFirebaseUid: req.params.studentUid,
-        status: "pending",
-      },
+      { soulteeFirebaseUid: soulteeUid, studentFirebaseUid: studentUid, status: "pending" },
       { status: "active", acceptedAt: new Date() },
       { new: true }
     );
 
     if (!link) return res.status(404).json({ message: "Pending request not found" });
+
+    // Fetch soultee name to include in the notification
+    const soultee = await Soultee.findOne({ firebaseUid: soulteeUid }).select("name profileImage").lean();
+
+    // Notify the student in real-time
+    io.to(`student:${studentUid}`).emit("connection_accepted", {
+      linkId: link._id,
+      soulteeFirebaseUid: soulteeUid,
+      roomId: link._id.toString(),
+      solteeName: soultee?.name || "Your Soultee",
+      soulteeProfileImage: soultee?.profileImage || null,
+      acceptedAt: link.acceptedAt,
+    });
+
     res.json({ message: "Student accepted", link });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -208,17 +240,25 @@ router.patch("/:soulteeUid/requests/:studentUid/accept", async (req, res) => {
 
 router.patch("/:soulteeUid/requests/:studentUid/decline", async (req, res) => {
   try {
+    const { soulteeUid, studentUid } = req.params;
+
     const link = await StudentSoulteeLink.findOneAndUpdate(
-      {
-        soulteeFirebaseUid: req.params.soulteeUid,
-        studentFirebaseUid: req.params.studentUid,
-        status: "pending",
-      },
+      { soulteeFirebaseUid: soulteeUid, studentFirebaseUid: studentUid, status: "pending" },
       { status: "declined" },
       { new: true }
     );
 
     if (!link) return res.status(404).json({ message: "Pending request not found" });
+
+    const soultee = await Soultee.findOne({ firebaseUid: soulteeUid }).select("name").lean();
+
+    // Notify the student in real-time
+    io.to(`student:${studentUid}`).emit("connection_declined", {
+      linkId: link._id,
+      soulteeFirebaseUid: soulteeUid,
+      solteeName: soultee?.name || "Your Soultee",
+    });
+
     res.json({ message: "Request declined", link });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -486,4 +526,5 @@ router.get("/:soulteeUid/live", async (req, res) => {
   req.on("close", () => clearInterval(interval));
 });
 
-export default router;
+  return router;
+} // end createSoulteeDashboardRoutes

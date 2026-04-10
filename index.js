@@ -11,7 +11,7 @@ import souljarRoutes from "./routes/souljarRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
 import settingsRoutes from "./routes/settingsRoutes.js";
 import soulpanaRoutes from "./routes/soulpanaRoutes.js";
-import soulteeDashboardRoutes from "./routes/soulteeDashboardRoutes.js";
+import createSoulteeDashboardRoutes from "./routes/soulteeDashboardRoutes.js";
 import chatRoutes from "./routes/chatRoutes.js";
 import Message from "./models/Message.js";
 import Soultee from "./models/Soultee.js";
@@ -29,8 +29,9 @@ const io = new Server(httpServer, {
   cors: { origin: "*", methods: ["GET", "POST"] },
 });
 
-// Track which socket belongs to which soultee (socketId → firebaseUid)
+// Track presence: socketId → firebaseUid
 const soulteePresence = new Map();
+const studentPresence = new Map(); // socketId → studentUid
 
 // Helper: update status in DB and broadcast to all clients
 async function setSoulteeStatus(uid, status) {
@@ -45,10 +46,19 @@ async function setSoulteeStatus(uid, status) {
 io.on("connection", (socket) => {
   console.log(`🔌 Socket connected: ${socket.id}`);
 
+  // ── STUDENT PRESENCE — join personal notification room ────────────────────
+  socket.on("student_go_online", ({ uid, name }) => {
+    studentPresence.set(socket.id, uid);
+    socket.data.studentUid = uid;
+    socket.join(`student:${uid}`);
+    console.log(`🎓 Student online: ${name} (${uid})`);
+  });
+
   // ── SOULTEE PRESENCE — called right after soultee app opens ───────────────
   socket.on("soultee_go_online", async ({ uid, name }) => {
     soulteePresence.set(socket.id, uid);
     socket.data.soulteeUid = uid;
+    socket.join(`soultee:${uid}`); // personal room for targeted notifications
     console.log(`🟢 Soultee online: ${name} (${uid})`);
     await setSoulteeStatus(uid, "online");
   });
@@ -96,7 +106,7 @@ io.on("connection", (socket) => {
   socket.on("end_call",      ({ roomId })                  => io.to(roomId).emit("call_ended"));
   socket.on("reject_call",   ({ roomId })                  => socket.to(roomId).emit("call_rejected"));
 
-  // ── Disconnect — auto set soultee offline ──────────────────────────────────
+  // ── Disconnect — auto set soultee offline, clean up student ───────────────
   socket.on("disconnect", async () => {
     const soulteeUid = soulteePresence.get(socket.id);
     if (soulteeUid) {
@@ -104,6 +114,13 @@ io.on("connection", (socket) => {
       console.log(`🔴 Soultee disconnected → offline: ${soulteeUid}`);
       await setSoulteeStatus(soulteeUid, "offline");
     }
+
+    const studentUid = studentPresence.get(socket.id);
+    if (studentUid) {
+      studentPresence.delete(socket.id);
+      console.log(`🎓 Student disconnected: ${studentUid}`);
+    }
+
     console.log(`❌ Socket disconnected: ${socket.id}`);
   });
 });
@@ -118,7 +135,7 @@ app.use("/api/soultees",          soulteeRoutes);
 app.use("/api/admin",             adminRoutes);
 app.use("/api/settings",          settingsRoutes);
 app.use("/api/soulpana",          soulpanaRoutes);
-app.use("/api/soultee-dashboard", soulteeDashboardRoutes);
+app.use("/api/soultee-dashboard", createSoulteeDashboardRoutes(io));
 app.use("/api/chat",              chatRoutes);
 app.use(express.static(join(__dirname, "public")));
 
