@@ -276,6 +276,17 @@ export function registerRealtimeServer(io) {
       socket.to(roomId).emit("call_rejected", { rejectedBy: socket.data.userId });
     });
 
+    // ── Question thread room — both student & soultee join to get live comments
+    socket.on("join_question", ({ questionId }) => {
+      if (!questionId) return;
+      socket.join(`question:${questionId}`);
+    });
+
+    socket.on("leave_question", ({ questionId }) => {
+      if (!questionId) return;
+      socket.leave(`question:${questionId}`);
+    });
+
     socket.on("disconnect", async () => {
       const soulteeUid = socket.data.soulteeUid;
       if (soulteeUid && removeSocket(soulteeSocketsByUid, soulteeUid, socket.id)) {
