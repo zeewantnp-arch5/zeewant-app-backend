@@ -44,6 +44,7 @@ app.use("/api/soultee-dashboard", createSoulteeDashboardRoutes(io));
 app.use("/api/chat",              createChatRoutes(io));
 app.use("/api/notifications",     notificationRoutes);
 app.use(express.static(join(__dirname, "public")));
+app.use("/uploads", express.static(join(__dirname, "uploads")));
 
 app.get("/", (req, res) => res.send("Zeewant Backend Running..."));
 
