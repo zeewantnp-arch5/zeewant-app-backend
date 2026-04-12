@@ -76,12 +76,10 @@ export default function createSoulpanaRoutes(io) {
         attachments,
       });
 
-      // ── Real-time: broadcast to all connected soultees ──────────────────────
-      // Find all soultees of the requested type and emit to their personal rooms
-      const soultees = await Soultee.find({
-        status: { $in: ["online", "busy"] },
-      }).select("firebaseUid").lean();
+      // ── Respond immediately so the student is never blocked by socket work ──
+      res.status(201).json(entry);
 
+      // ── Real-time broadcast (fire-and-forget, never affects HTTP response) ──
       const payload = {
         questionId: entry._id,
         title: entry.title,
@@ -92,14 +90,17 @@ export default function createSoulpanaRoutes(io) {
         createdAt: entry.createdAt,
       };
 
-      soultees.forEach(({ firebaseUid }) => {
-        emitToUser(io, "soultee", firebaseUid, "new_emotional_question", payload);
-      });
-
-      // Also broadcast globally so the soultee queue updates in real-time
       io.emit("emotional_question_submitted", payload);
 
-      res.status(201).json(entry);
+      Soultee.find({ status: { $in: ["online", "busy"] } })
+        .select("firebaseUid")
+        .lean()
+        .then((soultees) => {
+          soultees.forEach(({ firebaseUid }) => {
+            emitToUser(io, "soultee", firebaseUid, "new_emotional_question", payload);
+          });
+        })
+        .catch((err) => console.error("Socket broadcast error:", err.message));
     } catch (err) {
       console.error("Soulpana submit error:", err);
       res.status(500).json({ message: err.message });
