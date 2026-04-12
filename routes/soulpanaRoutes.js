@@ -51,13 +51,12 @@ export default function createSoulpanaRoutes(io) {
       const {
         userId, title, category, soulteeType,
         description, anonymous, emotionTag,
+        assignedSoulteeUid, assignedSoulteeName,
       } = req.body;
 
-      console.log("Soulpana POST body:", { userId, title, category, soulteeType, description, emotionTag });
-
-      if (!userId || !title || !category || !soulteeType || !description) {
+      if (!userId || !title || !category || !description) {
         return res.status(400).json({
-          message: `Missing required fields. Received: ${JSON.stringify({ userId: !!userId, title: !!title, category: !!category, soulteeType: !!soulteeType, description: !!description })}`,
+          message: "userId, title, category, and description are required.",
         });
       }
 
@@ -77,10 +76,12 @@ export default function createSoulpanaRoutes(io) {
         userId,
         title,
         category,
-        soulteeType,
+        soulteeType: soulteeType || null,
         description,
         emotionTag: emotionTag || null,
         anonymous: anonymous === "true" || anonymous === true,
+        assignedSoulteeUid: assignedSoulteeUid || null,
+        assignedSoulteeName: assignedSoulteeName || null,
         attachments,
       });
 
@@ -91,22 +92,27 @@ export default function createSoulpanaRoutes(io) {
         questionId: entry._id,
         title: entry.title,
         category: entry.category,
-        soulteeType: entry.soulteeType,
         emotionTag: entry.emotionTag,
         anonymous: entry.anonymous,
+        assignedSoulteeUid: entry.assignedSoulteeUid,
         createdAt: entry.createdAt,
       };
 
-      io.emit("emotional_question_submitted", payload);
-
-      Soultee.find({ status: { $in: ["online", "busy"] } })
-        .select("firebaseUid").lean()
-        .then((soultees) => {
-          soultees.forEach(({ firebaseUid }) =>
-            emitToUser(io, "soultee", firebaseUid, "new_emotional_question", payload)
-          );
-        })
-        .catch((e) => console.error("Socket broadcast error:", e.message));
+      if (entry.assignedSoulteeUid) {
+        // Notify the specific assigned soultee only
+        emitToUser(io, "soultee", entry.assignedSoulteeUid, "new_emotional_question", payload);
+      } else {
+        // No specific soultee → broadcast to all online soultees
+        io.emit("emotional_question_submitted", payload);
+        Soultee.find({ status: { $in: ["online", "busy"] } })
+          .select("firebaseUid").lean()
+          .then((soultees) => {
+            soultees.forEach(({ firebaseUid }) =>
+              emitToUser(io, "soultee", firebaseUid, "new_emotional_question", payload)
+            );
+          })
+          .catch((e) => console.error("Socket broadcast error:", e.message));
+      }
 
     } catch (err) {
       console.error("Soulpana submit error:", err);
@@ -117,9 +123,15 @@ export default function createSoulpanaRoutes(io) {
   // ── GET /api/soulpana/pending/all  ──  soultee queue ────────────────────────
   router.get("/pending/all", async (req, res) => {
     try {
-      const { soulteeType, emotionTag, page = 1, limit = 20 } = req.query;
+      const { soulteeUid, emotionTag, page = 1, limit = 20 } = req.query;
       const filter = { status: "pending" };
-      if (soulteeType) filter.soulteeType = soulteeType;
+      // Filter to only questions assigned to this soultee (or unassigned ones)
+      if (soulteeUid) {
+        filter.$or = [
+          { assignedSoulteeUid: soulteeUid },
+          { assignedSoulteeUid: null },
+        ];
+      }
       if (emotionTag) filter.emotionTag = emotionTag;
 
       const skip = (Number(page) - 1) * Number(limit);
@@ -134,7 +146,7 @@ export default function createSoulpanaRoutes(io) {
   });
 
   // ── GET /api/soulpana/stats  ──  pending / answered / closed counts ──────────
-  router.get("/stats", async (req, res) => {
+  router.get("/stats", async (_req, res) => {
     try {
       const [pending, answered, closed] = await Promise.all([
         Soulpana.countDocuments({ status: "pending" }),
