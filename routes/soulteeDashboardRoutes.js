@@ -11,6 +11,7 @@ import {
   getUnreadMessageSummary,
 } from "../services/messageService.js";
 import { createNotification, emitToUser } from "../services/notificationService.js";
+import { syncProfileToRTDB } from "../config/firebase.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Factory — receives io so every route handler can emit socket events
@@ -65,6 +66,21 @@ export default function createSoulteeDashboardRoutes(io) {
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
 
+      // Sync profile to Firebase RTDB for real-time reads
+      syncProfileToRTDB(firebaseUid, {
+        uid: firebaseUid,
+        name,
+        gender: gender || null,
+        specialization: specialization || null,
+        experienceYears: experienceYears || null,
+        languages: languages || [],
+        bio: bio || null,
+        status: soultee.status,
+        rating: soultee.rating,
+        profileImage: soultee.profileImage || null,
+        role: "soultee",
+      });
+
       res.status(200).json({ soultee });
     } catch (err) {
       res.status(500).json({ message: err.message });
@@ -89,6 +105,15 @@ export default function createSoulteeDashboardRoutes(io) {
       );
 
       if (!soultee) return res.status(404).json({ message: "Soultee not found" });
+
+      // Sync status change to RTDB
+      syncProfileToRTDB(req.params.soulteeUid, {
+        uid: req.params.soulteeUid,
+        name: soultee.name,
+        status: soultee.status,
+        role: "soultee",
+      });
+
       res.json({ status: soultee.status });
     } catch (err) {
       res.status(500).json({ message: err.message });

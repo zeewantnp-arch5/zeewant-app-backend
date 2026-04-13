@@ -1,6 +1,6 @@
 import FCMToken from "../models/FCMToken.js";
 import Notification from "../models/Notification.js";
-import { sendPushNotification } from "../config/firebase.js";
+import { sendPushNotification, syncNotificationToRTDB } from "../config/firebase.js";
 
 export function buildPersonalRoom(role, uid) {
   return `${role}:${uid}`;
@@ -35,7 +35,15 @@ export async function createNotification(
     data,
   });
 
-  emitToUser(io, recipientRole, recipientUid, "new_notification", serializeNotification(notification));
+  const serialized = serializeNotification(notification);
+  emitToUser(io, recipientRole, recipientUid, "new_notification", serialized);
+
+  // Sync to Firebase RTDB for real-time reads
+  syncNotificationToRTDB(recipientUid, String(notification._id), {
+    ...serialized,
+    data: serialized.data,
+    createdAt: notification.createdAt.getTime(),
+  });
 
   try {
     const tokenRecord = await FCMToken.findOne({ uid: recipientUid }).lean();

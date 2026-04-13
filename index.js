@@ -14,6 +14,7 @@ import createSoulpanaRoutes from "./routes/soulpanaRoutes.js";
 import createSoulteeDashboardRoutes from "./routes/soulteeDashboardRoutes.js";
 import createChatRoutes from "./routes/chatRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
+import otpRoutes from "./routes/otpRoutes.js";
 import "./config/firebase.js"; // initialise Firebase Admin on startup
 import { registerRealtimeServer, resetRealtimePresenceState } from "./sockets/realtimeServer.js";
 
@@ -43,6 +44,7 @@ app.use("/api/soulpana",          createSoulpanaRoutes(io));
 app.use("/api/soultee-dashboard", createSoulteeDashboardRoutes(io));
 app.use("/api/chat",              createChatRoutes(io));
 app.use("/api/notifications",     notificationRoutes);
+app.use("/api/otp",               otpRoutes);
 app.use(express.static(join(__dirname, "public")));
 app.use("/uploads", express.static(join(__dirname, "uploads")));
 

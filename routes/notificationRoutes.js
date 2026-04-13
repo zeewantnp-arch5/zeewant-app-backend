@@ -1,6 +1,7 @@
 import express from "express";
 import FCMToken from "../models/FCMToken.js";
 import Notification from "../models/Notification.js";
+import { updateNotificationInRTDB, deleteNotificationFromRTDB } from "../config/firebase.js";
 
 const router = express.Router();
 
@@ -99,6 +100,7 @@ router.patch("/:uid/:notifId/read", async (req, res) => {
       { new: true }
     );
     if (!notif) return res.status(404).json({ message: "Notification not found" });
+    updateNotificationInRTDB(req.params.uid, req.params.notifId, { read: true });
     res.json({ notification: notif });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -111,9 +113,17 @@ router.patch("/:uid/:notifId/read", async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.patch("/:uid/read-all", async (req, res) => {
   try {
+    const unread = await Notification.find(
+      { recipientUid: req.params.uid, read: false },
+      { _id: 1 }
+    ).lean();
     await Notification.updateMany(
       { recipientUid: req.params.uid, read: false },
       { read: true }
+    );
+    // Sync each to RTDB
+    unread.forEach(({ _id }) =>
+      updateNotificationInRTDB(req.params.uid, String(_id), { read: true })
     );
     res.json({ message: "All notifications marked as read" });
   } catch (err) {
@@ -131,6 +141,7 @@ router.delete("/:uid/:notifId", async (req, res) => {
       _id: req.params.notifId,
       recipientUid: req.params.uid,
     });
+    deleteNotificationFromRTDB(req.params.uid, req.params.notifId);
     res.json({ message: "Notification deleted" });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -144,6 +155,7 @@ router.delete("/:uid/:notifId", async (req, res) => {
 router.delete("/:uid/clear-all", async (req, res) => {
   try {
     await Notification.deleteMany({ recipientUid: req.params.uid });
+    deleteNotificationFromRTDB(req.params.uid, null);
     res.json({ message: "All notifications cleared" });
   } catch (err) {
     res.status(500).json({ message: err.message });
