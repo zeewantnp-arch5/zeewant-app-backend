@@ -16,6 +16,10 @@ export function serializeMessage(message) {
     recipientRole: message.recipientRole,
     text: message.text,
     type: message.type,
+    attachmentUrl: message.attachmentUrl || null,
+    attachmentName: message.attachmentName || null,
+    attachmentMimeType: message.attachmentMimeType || null,
+    attachmentSize: message.attachmentSize || null,
     readAt: message.readAt,
     createdAt: message.createdAt,
     updatedAt: message.updatedAt,
@@ -59,6 +63,7 @@ export async function createPersistentMessage({
   senderRole,
   text,
   type = "text",
+  attachment = null,
   allowPending = false,
 }) {
   const link = await getRoomLinkForParticipant({
@@ -85,6 +90,10 @@ export async function createPersistentMessage({
     recipientRole,
     text: text || "",
     type,
+    attachmentUrl: attachment?.url || null,
+    attachmentName: attachment?.name || null,
+    attachmentMimeType: attachment?.mimeType || null,
+    attachmentSize: attachment?.size || null,
   });
 
   return {
