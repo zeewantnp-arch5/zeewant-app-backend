@@ -2,6 +2,7 @@ import express from "express";
 import jwt from "jsonwebtoken";
 import Souljar from "../models/souljar.js";
 import Soultee from "../models/Soultee.js";
+import admin from "../config/firebase.js";
 
 const router = express.Router();
 
@@ -127,6 +128,162 @@ router.get("/soultees", requireAdmin, async (req, res) => {
   try {
     const soultees = await Soultee.find().sort({ createdAt: -1 }).lean();
     res.json({ soultees, total: soultees.length });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ─── Firestore helper ─────────────────────────────────────────────────────────
+function getFirestore() {
+  if (!admin.apps.length) throw new Error("Firebase Admin not initialised");
+  return admin.firestore();
+}
+
+// ─── GET /api/admin/soultees/firebase-all ─────────────────────────────────────
+// Fetch approved (role=='soultee') + pending (rolePending==true) from Firestore
+router.get("/soultees/firebase-all", requireAdmin, async (req, res) => {
+  try {
+    const db = getFirestore();
+    const usersCol = db.collection("users");
+
+    const [approvedSnap, pendingSnap] = await Promise.all([
+      usersCol.where("role", "==", "soultee").get(),
+      usersCol.where("rolePending", "==", true).get(),
+    ]);
+
+    const profiles = {};
+
+    approvedSnap.forEach((doc) => {
+      profiles[doc.id] = { uid: doc.id, ...doc.data() };
+    });
+
+    pendingSnap.forEach((doc) => {
+      if (!profiles[doc.id]) {
+        profiles[doc.id] = { uid: doc.id, ...doc.data() };
+      }
+    });
+
+    const list = Object.values(profiles).sort((a, b) =>
+      (a.name || "").localeCompare(b.name || "")
+    );
+
+    res.json({ soultees: list, total: list.length });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ─── PATCH /api/admin/soultees/:uid/approve ───────────────────────────────────
+router.patch("/soultees/:uid/approve", requireAdmin, async (req, res) => {
+  const { uid } = req.params;
+  const { soulteeType } = req.body;
+
+  try {
+    const db = getFirestore();
+
+    // 1. Update Firestore user document
+    await db.collection("users").doc(uid).update({
+      role: "soultee",
+      rolePending: false,
+      soulteeType: soulteeType || "General",
+      soulteeStatus: "Active",
+    });
+
+    // 2. Fetch the latest profile data to upsert into MongoDB
+    const userDoc = await db.collection("users").doc(uid).get();
+    const data = userDoc.data() || {};
+
+    await Soultee.findOneAndUpdate(
+      { firebaseUid: uid },
+      {
+        firebaseUid: uid,
+        name: data.name || "Unknown",
+        gender: data.gender || "",
+        specialization: Array.isArray(data.specialization)
+          ? data.specialization.join(", ")
+          : data.specialization || "",
+        languages: data.languages || [],
+        feePerSession: data.fees || 0,
+        bio: data.bio || "",
+        profileImage: data.profileImageUrl || "",
+        status: "offline",
+      },
+      { upsert: true, new: true }
+    );
+
+    res.json({ message: "SOULTEE approved successfully" });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ─── PATCH /api/admin/soultees/:uid/reject ────────────────────────────────────
+router.patch("/soultees/:uid/reject", requireAdmin, async (req, res) => {
+  const { uid } = req.params;
+  try {
+    const db = getFirestore();
+    await db.collection("users").doc(uid).update({
+      role: "Student",
+      rolePending: false,
+    });
+    res.json({ message: "SOULTEE rejected" });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ─── PATCH /api/admin/soultees/:uid/suspend ───────────────────────────────────
+router.patch("/soultees/:uid/suspend", requireAdmin, async (req, res) => {
+  const { uid } = req.params;
+  try {
+    const db = getFirestore();
+    await db.collection("users").doc(uid).update({ soulteeStatus: "Suspended" });
+
+    // Also mark offline in MongoDB
+    await Soultee.findOneAndUpdate({ firebaseUid: uid }, { status: "offline" });
+
+    res.json({ message: "SOULTEE suspended" });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ─── PATCH /api/admin/soultees/:uid/reactivate ────────────────────────────────
+router.patch("/soultees/:uid/reactivate", requireAdmin, async (req, res) => {
+  const { uid } = req.params;
+  try {
+    const db = getFirestore();
+    await db.collection("users").doc(uid).update({ soulteeStatus: "Active" });
+    res.json({ message: "SOULTEE reactivated" });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ─── PATCH /api/admin/soultees/:uid/badge ────────────────────────────────────
+router.patch("/soultees/:uid/badge", requireAdmin, async (req, res) => {
+  const { uid } = req.params;
+  const { badge } = req.body;
+  if (!["Gold", "Silver", "Diamond"].includes(badge)) {
+    return res.status(400).json({ message: "Invalid badge value" });
+  }
+  try {
+    const db = getFirestore();
+    await db.collection("users").doc(uid).update({ badge });
+    res.json({ message: `Badge set to ${badge}` });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ─── PATCH /api/admin/soultees/:uid/type ─────────────────────────────────────
+router.patch("/soultees/:uid/type", requireAdmin, async (req, res) => {
+  const { uid } = req.params;
+  const { soulteeType } = req.body;
+  try {
+    const db = getFirestore();
+    await db.collection("users").doc(uid).update({ soulteeType });
+    res.json({ message: `Type updated to ${soulteeType}` });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
