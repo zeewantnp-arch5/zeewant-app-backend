@@ -21,19 +21,59 @@ const requireAdmin = (req, res, next) => {
 
 // ─── POST /api/admin/login ────────────────────────────────────────────────────
 router.post("/login", (req, res) => {
-  const { username, password } = req.body;
+  const { username, password, idToken } = req.body;
   const adminUser = process.env.ADMIN_USERNAME || "admin";
   const adminPass = process.env.ADMIN_PASSWORD || "admin123";
+
+  const createAdminToken = (payloadUsername, extra = {}) =>
+    jwt.sign(
+      { username: payloadUsername, ...extra },
+      process.env.JWT_SECRET || "fallback_secret",
+      { expiresIn: "12h" }
+    );
+
+  // Firebase-auth flow (email/password done on client, ID token verified here)
+  if (idToken) {
+    if (!admin.apps.length) {
+      return res.status(500).json({ message: "Firebase Admin not initialised" });
+    }
+
+    admin
+      .auth()
+      .verifyIdToken(idToken)
+      .then((decoded) => {
+        const email = String(decoded.email || "").toLowerCase();
+        const allowed = String(process.env.ADMIN_ALLOWED_EMAILS || "")
+          .split(",")
+          .map((e) => e.trim().toLowerCase())
+          .filter(Boolean);
+
+        const hasAdminClaim = decoded.admin === true || decoded.superAdmin === true;
+        const isAllowedEmail = email && allowed.includes(email);
+
+        if (!hasAdminClaim && !isAllowedEmail) {
+          return res.status(403).json({ message: "Not authorized for admin panel" });
+        }
+
+        const token = createAdminToken(email || username || "admin", {
+          firebaseUid: decoded.uid,
+          email: decoded.email || null,
+          authType: "firebase",
+        });
+
+        return res.json({ token, message: "Login successful" });
+      })
+      .catch(() => {
+        return res.status(401).json({ message: "Invalid Firebase token" });
+      });
+    return;
+  }
 
   if (username !== adminUser || password !== adminPass) {
     return res.status(401).json({ message: "Invalid credentials" });
   }
 
-  const token = jwt.sign(
-    { username },
-    process.env.JWT_SECRET || "fallback_secret",
-    { expiresIn: "12h" }
-  );
+  const token = createAdminToken(username, { authType: "env" });
 
   res.json({ token, message: "Login successful" });
 });
