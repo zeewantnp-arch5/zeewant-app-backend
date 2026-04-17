@@ -86,11 +86,23 @@ router.post("/login", async (req, res) => {
       { expiresIn: "12h" }
     );
 
+    // Try to fetch Gmail/Google profile photo from Firebase Auth
+    let photoUrl = adminUser.profileImage || null;
+    if (!photoUrl && admin.apps.length) {
+      try {
+        const fbUser = await admin.auth().getUserByEmail(adminUser.email);
+        if (fbUser.photoURL) photoUrl = fbUser.photoURL;
+      } catch {
+        // User not in Firebase Auth — no photo, that's fine
+      }
+    }
+
     return res.json({
       token,
       name: adminUser.name,
       email: adminUser.email,
       role: adminUser.role,
+      photoUrl,
       message: "Login successful",
     });
   } catch (error) {
@@ -321,10 +333,10 @@ router.post(
 
       const imageUrl = `https://storage.googleapis.com/${bucket.name}/${destPath}`;
 
-      // Save URL in MongoDB
+      // Save URL in MongoDB (overrides Gmail photo going forward)
       await AdminUser.findByIdAndUpdate(req.admin.id, { profileImage: imageUrl });
 
-      res.json({ imageUrl, message: "Avatar updated" });
+      res.json({ imageUrl, photoUrl: imageUrl, message: "Avatar updated" });
     } catch (error) {
       res.status(500).json({ message: error.message });
     }
