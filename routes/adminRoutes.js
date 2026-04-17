@@ -86,14 +86,22 @@ router.post("/login", async (req, res) => {
       { expiresIn: "12h" }
     );
 
-    // Try to fetch Gmail/Google profile photo from Firebase Auth
+    // Resolve profile photo:
+    // 1. Use custom uploaded photo (profileImage in MongoDB)
+    // 2. Fetch from Firebase Auth (Google/Gmail photo) and persist it
     let photoUrl = adminUser.profileImage || null;
     if (!photoUrl && admin.apps.length) {
       try {
         const fbUser = await admin.auth().getUserByEmail(adminUser.email);
-        if (fbUser.photoURL) photoUrl = fbUser.photoURL;
-      } catch {
-        // User not in Firebase Auth — no photo, that's fine
+        if (fbUser.photoURL) {
+          photoUrl = fbUser.photoURL;
+          // Persist so future sessions load instantly without Firebase lookup
+          await AdminUser.findByIdAndUpdate(adminUser._id, { profileImage: fbUser.photoURL });
+          console.log(`[Admin] Saved Gmail photo for ${adminUser.email}`);
+        }
+      } catch (e) {
+        // Not in Firebase Auth — no Google photo available
+        console.log(`[Admin] No Firebase Auth user for ${adminUser.email}: ${e.message}`);
       }
     }
 
