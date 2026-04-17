@@ -5,6 +5,7 @@ import Souljar from "../models/souljar.js";
 import Soultee from "../models/Soultee.js";
 import AdminUser, { ADMIN_ROLES } from "../models/AdminUser.js";
 import admin from "../config/firebase.js";
+import { sendResetCodeEmail } from "../services/emailService.js";
 
 // Multer: store in memory so we can stream to Firebase Storage
 const upload = multer({
@@ -223,9 +224,8 @@ router.post("/register", async (req, res) => {
 });
 
 // ─── POST /api/admin/forgot-password ─────────────────────────────────────────
-// Generates a 6-digit reset code valid for 15 minutes.
-// Since this is an internal panel with no email service, the code is returned
-// directly in the response so the UI can display it to the user.
+// Generates a 6-digit OTP, saves it, and emails it to the admin's Gmail.
+// The code is NOT returned in the response to prevent enumeration.
 router.post("/forgot-password", async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ message: "Email is required" });
@@ -238,25 +238,35 @@ router.post("/forgot-password", async (req, res) => {
 
     // Always return 200 to avoid email enumeration
     if (!adminUser) {
-      return res.json({ message: "If that email exists, a reset code has been generated." });
+      return res.json({
+        message: "If that email is registered, a reset code has been sent to it.",
+      });
     }
 
-    // Generate a 6-digit code, expire in 15 minutes
+    // Generate a 6-digit OTP, valid for 15 minutes
     const code = String(Math.floor(100000 + Math.random() * 900000));
     adminUser.resetToken = code;
     adminUser.resetTokenExpiry = new Date(Date.now() + 15 * 60 * 1000);
     await adminUser.save();
 
-    console.log(`[Admin Reset] Code for ${email}: ${code}`);
+    // Send OTP to the admin's Gmail inbox
+    await sendResetCodeEmail(adminUser.email, code);
+    console.log(`[Admin Reset] OTP sent to ${adminUser.email}`);
 
     res.json({
-      message: "Reset code generated.",
-      // Return code directly (internal panel — no email service)
-      resetCode: code,
-      expiresIn: "15 minutes",
+      message: "A 6-digit reset code has been sent to your email. Check your inbox.",
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("[Admin Reset] Error:", error.message);
+    // Surface email config errors clearly; hide other internals
+    const isMailError = error.message.includes("MAIL_USER") ||
+                        error.message.includes("MAIL_PASS") ||
+                        error.message.includes("Email not configured");
+    res.status(500).json({
+      message: isMailError
+        ? "Email service not configured. Contact your system administrator."
+        : "Failed to send reset code. Please try again.",
+    });
   }
 });
 
