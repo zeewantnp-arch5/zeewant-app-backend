@@ -49,53 +49,33 @@ router.post("/login", async (req, res) => {
       isActive: true,
     });
 
-    if (adminUser) {
-      // 2a. MongoDB-based admin — verify bcrypt password
-      const valid = await adminUser.verifyPassword(password);
-      if (!valid) {
-        return res.status(401).json({ message: "Invalid credentials" });
-      }
-
-      const token = jwt.sign(
-        {
-          id: adminUser._id.toString(),
-          username: adminUser.username,
-          name: adminUser.name,
-          email: adminUser.email,
-          role: adminUser.role,
-        },
-        JWT_SECRET,
-        { expiresIn: "12h" }
-      );
-
-      return res.json({
-        token,
-        name: adminUser.name,
-        email: adminUser.email,
-        role: adminUser.role,
-        message: "Login successful",
-      });
+    if (!adminUser) {
+      return res.status(401).json({ message: "Invalid credentials" });
     }
 
-    // 2b. Fallback: env-based single admin (superAdmin)
-    const envUser = process.env.ADMIN_USERNAME || "admin";
-    const envPass = process.env.ADMIN_PASSWORD || "admin123";
-
-    if (username.trim() !== envUser || password !== envPass) {
+    // Verify bcrypt password
+    const valid = await adminUser.verifyPassword(password);
+    if (!valid) {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
     const token = jwt.sign(
-      { username: envUser, name: "Super Admin", role: "superAdmin" },
+      {
+        id: adminUser._id.toString(),
+        username: adminUser.username,
+        name: adminUser.name,
+        email: adminUser.email,
+        role: adminUser.role,
+      },
       JWT_SECRET,
       { expiresIn: "12h" }
     );
 
     return res.json({
       token,
-      name: "Super Admin",
-      email: null,
-      role: "superAdmin",
+      name: adminUser.name,
+      email: adminUser.email,
+      role: adminUser.role,
       message: "Login successful",
     });
   } catch (error) {
