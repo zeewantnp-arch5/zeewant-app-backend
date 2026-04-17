@@ -336,10 +336,12 @@ router.post(
         metadata: { contentType: req.file.mimetype },
       });
 
-      // Make the file publicly readable
-      await fileRef.makePublic();
-
-      const imageUrl = `https://storage.googleapis.com/${bucket.name}/${destPath}`;
+      // Get a long-lived signed URL (10 years) — works on all bucket types
+      // including uniform-access-control buckets where makePublic() fails
+      const [imageUrl] = await fileRef.getSignedUrl({
+        action: "read",
+        expires: Date.now() + 10 * 365 * 24 * 60 * 60 * 1000,
+      });
 
       // Save URL in MongoDB (overrides Gmail photo going forward)
       await AdminUser.findByIdAndUpdate(req.admin.id, { profileImage: imageUrl });
