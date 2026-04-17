@@ -17,6 +17,7 @@ const adminUserSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     role: { type: String, enum: ROLES, required: true },
     isActive: { type: Boolean, default: true },
+    profileImage: { type: String, default: null },
     resetToken: { type: String, default: null },
     resetTokenExpiry: { type: Date, default: null },
   },

@@ -1,9 +1,20 @@
 import express from "express";
 import jwt from "jsonwebtoken";
+import multer from "multer";
 import Souljar from "../models/souljar.js";
 import Soultee from "../models/Soultee.js";
 import AdminUser, { ADMIN_ROLES } from "../models/AdminUser.js";
 import admin from "../config/firebase.js";
+
+// Multer: store in memory so we can stream to Firebase Storage
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB max
+  fileFilter: (_, file, cb) => {
+    if (file.mimetype.startsWith("image/")) cb(null, true);
+    else cb(new Error("Only image files are allowed"));
+  },
+});
 
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
@@ -278,6 +289,47 @@ router.get("/me", requireAdmin, (req, res) => {
     role: req.admin.role,
   });
 });
+
+// ─── POST /api/admin/profile/avatar ──────────────────────────────────────────
+// Upload admin profile picture to Firebase Storage, save URL in MongoDB.
+router.post(
+  "/profile/avatar",
+  requireAdmin,
+  upload.single("avatar"),
+  async (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({ message: "No image file provided" });
+    }
+
+    try {
+      if (!admin.apps.length) {
+        return res.status(500).json({ message: "Firebase not initialised" });
+      }
+
+      const bucket = admin.storage().bucket();
+      const ext = req.file.mimetype === "image/png" ? "png" : "jpg";
+      const destPath = `admin-avatars/${req.admin.id}.${ext}`;
+      const fileRef = bucket.file(destPath);
+
+      // Upload buffer to Firebase Storage
+      await fileRef.save(req.file.buffer, {
+        metadata: { contentType: req.file.mimetype },
+      });
+
+      // Make the file publicly readable
+      await fileRef.makePublic();
+
+      const imageUrl = `https://storage.googleapis.com/${bucket.name}/${destPath}`;
+
+      // Save URL in MongoDB
+      await AdminUser.findByIdAndUpdate(req.admin.id, { profileImage: imageUrl });
+
+      res.json({ imageUrl, message: "Avatar updated" });
+    } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  }
+);
 
 // ─── GET /api/admin/stats ─────────────────────────────────────────────────────
 router.get("/stats", requireAdmin, async (req, res) => {
