@@ -33,7 +33,7 @@ const requireRole = (...roles) => (req, res, next) => {
 // Flow: look up AdminUser in MongoDB → verify bcrypt → return JWT with role.
 // Falls back to env-based single admin for first-run / backwards-compat.
 router.post("/login", async (req, res) => {
-  const { username, password } = req.body;
+  const { username, password, role } = req.body;
 
   if (!username || !password) {
     return res.status(400).json({ message: "Username and password are required" });
@@ -41,13 +41,17 @@ router.post("/login", async (req, res) => {
 
   try {
     // 1. Look up by username OR email in MongoDB
-    const adminUser = await AdminUser.findOne({
+    //    If role is provided, also filter by role so wrong-role attempts fail early.
+    const query = {
       $or: [
         { username: username.trim() },
         { email: username.trim().toLowerCase() },
       ],
       isActive: true,
-    });
+    };
+    if (role) query.role = role;
+
+    const adminUser = await AdminUser.findOne(query);
 
     if (!adminUser) {
       return res.status(401).json({ message: "Invalid credentials" });
@@ -84,7 +88,7 @@ router.post("/login", async (req, res) => {
 });
 
 // ─── POST /api/admin/seed ─────────────────────────────────────────────────────
-// One-time: create an admin account. Protected by ADMIN_SETUP_SECRET header.
+// One-time: create an admin account via header-based secret (scripts/createAdmin.js).
 router.post("/seed", async (req, res) => {
   const secret = req.headers["x-setup-secret"];
   if (!secret || secret !== process.env.ADMIN_SETUP_SECRET) {
@@ -119,6 +123,68 @@ router.post("/seed", async (req, res) => {
     res.status(201).json({
       message: "Admin created",
       admin: { username: newAdmin.username, email: newAdmin.email, role: newAdmin.role, name: newAdmin.name },
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ─── POST /api/admin/register ─────────────────────────────────────────────────
+// Self-registration from the admin panel UI.
+// Requires setupKey in the body matching ADMIN_SETUP_SECRET.
+router.post("/register", async (req, res) => {
+  const { name, email, password, role, setupKey } = req.body;
+
+  if (!name || !email || !password || !role || !setupKey) {
+    return res.status(400).json({ message: "All fields are required" });
+  }
+
+  if (setupKey !== process.env.ADMIN_SETUP_SECRET) {
+    return res.status(403).json({ message: "Invalid setup key" });
+  }
+
+  if (!ADMIN_ROLES.includes(role)) {
+    return res.status(400).json({ message: `Invalid role` });
+  }
+
+  if (password.length < 6) {
+    return res.status(400).json({ message: "Password must be at least 6 characters" });
+  }
+
+  try {
+    const existing = await AdminUser.findOne({ email: email.trim().toLowerCase() });
+    if (existing) {
+      return res.status(409).json({ message: "An account with this email already exists" });
+    }
+
+    const newAdmin = new AdminUser({
+      username: email.trim().toLowerCase(),
+      email: email.trim().toLowerCase(),
+      name: name.trim(),
+      role,
+    });
+    await newAdmin.setPassword(password);
+    await newAdmin.save();
+
+    // Auto-login: issue JWT immediately
+    const token = jwt.sign(
+      {
+        id: newAdmin._id.toString(),
+        username: newAdmin.username,
+        name: newAdmin.name,
+        email: newAdmin.email,
+        role: newAdmin.role,
+      },
+      JWT_SECRET,
+      { expiresIn: "12h" }
+    );
+
+    res.status(201).json({
+      token,
+      name: newAdmin.name,
+      email: newAdmin.email,
+      role: newAdmin.role,
+      message: "Account created successfully",
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
