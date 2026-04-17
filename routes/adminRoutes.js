@@ -191,6 +191,82 @@ router.post("/register", async (req, res) => {
   }
 });
 
+// ─── POST /api/admin/forgot-password ─────────────────────────────────────────
+// Generates a 6-digit reset code valid for 15 minutes.
+// Since this is an internal panel with no email service, the code is returned
+// directly in the response so the UI can display it to the user.
+router.post("/forgot-password", async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ message: "Email is required" });
+
+  try {
+    const adminUser = await AdminUser.findOne({
+      email: email.trim().toLowerCase(),
+      isActive: true,
+    });
+
+    // Always return 200 to avoid email enumeration
+    if (!adminUser) {
+      return res.json({ message: "If that email exists, a reset code has been generated." });
+    }
+
+    // Generate a 6-digit code, expire in 15 minutes
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    adminUser.resetToken = code;
+    adminUser.resetTokenExpiry = new Date(Date.now() + 15 * 60 * 1000);
+    await adminUser.save();
+
+    console.log(`[Admin Reset] Code for ${email}: ${code}`);
+
+    res.json({
+      message: "Reset code generated.",
+      // Return code directly (internal panel — no email service)
+      resetCode: code,
+      expiresIn: "15 minutes",
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ─── POST /api/admin/reset-password ──────────────────────────────────────────
+router.post("/reset-password", async (req, res) => {
+  const { email, resetCode, newPassword } = req.body;
+
+  if (!email || !resetCode || !newPassword) {
+    return res.status(400).json({ message: "email, resetCode, and newPassword are required" });
+  }
+
+  if (newPassword.length < 6) {
+    return res.status(400).json({ message: "Password must be at least 6 characters" });
+  }
+
+  try {
+    const adminUser = await AdminUser.findOne({
+      email: email.trim().toLowerCase(),
+      resetToken: resetCode.trim(),
+      isActive: true,
+    });
+
+    if (!adminUser) {
+      return res.status(400).json({ message: "Invalid or expired reset code" });
+    }
+
+    if (!adminUser.resetTokenExpiry || adminUser.resetTokenExpiry < new Date()) {
+      return res.status(400).json({ message: "Reset code has expired. Please request a new one." });
+    }
+
+    await adminUser.setPassword(newPassword);
+    adminUser.resetToken = null;
+    adminUser.resetTokenExpiry = null;
+    await adminUser.save();
+
+    res.json({ message: "Password reset successfully. You can now sign in." });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 // ─── GET /api/admin/me ────────────────────────────────────────────────────────
 // Returns the current admin's profile from the JWT payload.
 router.get("/me", requireAdmin, (req, res) => {
