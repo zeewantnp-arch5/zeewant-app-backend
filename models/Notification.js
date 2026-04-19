@@ -10,13 +10,17 @@ const notificationSchema = new mongoose.Schema(
     type: {
       type: String,
       enum: [
-        "connection_request",   // soultee receives: student wants to connect
-        "connection_accepted",  // student receives: soultee accepted
-        "connection_declined",  // student receives: soultee declined
-        "new_message",          // either side: unread chat message
-        "call_incoming",        // either side: incoming call while offline
-        "session_scheduled",    // student receives: soultee scheduled a session
-        "session_cancelled",    // either side: session was cancelled
+        "connection_request",            // soultee receives: student wants to connect
+        "connection_accepted",           // student receives: soultee accepted
+        "connection_declined",           // student receives: soultee declined
+        "new_message",                   // either side: unread chat message
+        "call_incoming",                 // either side: incoming call while offline
+        "session_scheduled",             // student receives: soultee scheduled a session
+        "session_cancelled",             // either side: session was cancelled
+        // SOULTEE application lifecycle
+        "application_approved",          // applicant receives: application approved
+        "application_rejected",          // applicant receives: application rejected
+        "application_revision_requested",// applicant receives: changes needed
       ],
       required: true,
     },

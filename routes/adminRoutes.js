@@ -4,7 +4,10 @@ import multer from "multer";
 import Souljar from "../models/souljar.js";
 import Soultee from "../models/Soultee.js";
 import AdminUser, { ADMIN_ROLES } from "../models/AdminUser.js";
-import admin from "../config/firebase.js";
+import SoulteeApplication, { computeCompletenessScore, computeRiskFlags } from "../models/SoulteeApplication.js";
+import FCMToken from "../models/FCMToken.js";
+import Notification from "../models/Notification.js";
+import admin, { syncNotificationToRTDB, sendPushNotification } from "../config/firebase.js";
 import { sendResetCodeEmail } from "../services/emailService.js";
 
 // Multer: store in memory so we can stream to Firebase Storage
@@ -611,4 +614,351 @@ router.patch(
   }
 );
 
+
+// ════════════════════════════════════════════════════════════════════════════
+//  SOULTEE APPLICATION MANAGEMENT
+//  All routes require requireAdmin; sensitive ones also require requireRole.
+// ════════════════════════════════════════════════════════════════════════════
+
+// ─── Helper: send multi-channel notification to an applicant ─────────────────
+async function notifyApplicant(io, { recipientUid, type, title, body, data = {} }) {
+  const notification = await Notification.create({
+    recipientUid,
+    recipientRole: "student", // applicants are students before approval
+    type,
+    title,
+    body,
+    data,
+  });
+
+  // Socket.io → personal room
+  io.to(`student:${recipientUid}`).emit("new_notification", {
+    _id:       notification._id,
+    type:      notification.type,
+    title:     notification.title,
+    body:      notification.body,
+    data:      Object.fromEntries(notification.data || []),
+    read:      false,
+    createdAt: notification.createdAt,
+  });
+
+  // Firebase RTDB sync
+  syncNotificationToRTDB(recipientUid, String(notification._id), {
+    type, title, body,
+    data,
+    createdAt: notification.createdAt.getTime(),
+    read: false,
+  });
+
+  // FCM push
+  try {
+    const tokenRecord = await FCMToken.findOne({ uid: recipientUid }).lean();
+    if (tokenRecord) {
+      const stringData = Object.fromEntries(
+        Object.entries(data).map(([k, v]) => [k, String(v)])
+      );
+      await sendPushNotification(tokenRecord.token, title, body, stringData);
+    }
+  } catch (e) {
+    if (
+      e.code === "messaging/registration-token-not-registered" ||
+      e.code === "messaging/invalid-registration-token"
+    ) {
+      await FCMToken.deleteOne({ uid: recipientUid });
+    }
+  }
+}
+
+// ─── GET /api/admin/applications/stats ───────────────────────────────────────
+router.get("/applications/stats", requireAdmin, async (req, res) => {
+  try {
+    const [pending, under_review, approved, rejected, revision_requested] =
+      await Promise.all([
+        SoulteeApplication.countDocuments({ status: "pending" }),
+        SoulteeApplication.countDocuments({ status: "under_review" }),
+        SoulteeApplication.countDocuments({ status: "approved" }),
+        SoulteeApplication.countDocuments({ status: "rejected" }),
+        SoulteeApplication.countDocuments({ status: "revision_requested" }),
+      ]);
+
+    res.json({ pending, under_review, approved, rejected, revision_requested,
+      total: pending + under_review + approved + rejected + revision_requested });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─── GET /api/admin/applications ─────────────────────────────────────────────
+// Query params: status, category, search, page, limit
+router.get("/applications", requireAdmin, async (req, res) => {
+  try {
+    const page  = Math.max(1, parseInt(req.query.page)  || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+    const skip  = (page - 1) * limit;
+
+    const filter = {};
+    if (req.query.status   && req.query.status   !== "all") filter.status   = req.query.status;
+    if (req.query.category && req.query.category !== "all") filter.category = req.query.category;
+    if (req.query.search) {
+      filter.$or = [
+        { name:  { $regex: req.query.search, $options: "i" } },
+        { email: { $regex: req.query.search, $options: "i" } },
+        { phone: { $regex: req.query.search, $options: "i" } },
+      ];
+    }
+
+    const [applications, total] = await Promise.all([
+      SoulteeApplication.find(filter)
+        .sort({ submittedAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .select("-auditLog")
+        .lean(),
+      SoulteeApplication.countDocuments(filter),
+    ]);
+
+    res.json({ applications, total, page, totalPages: Math.ceil(total / limit) });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─── GET /api/admin/applications/:id ─────────────────────────────────────────
+router.get("/applications/:id", requireAdmin, async (req, res) => {
+  try {
+    const application = await SoulteeApplication.findById(req.params.id).lean();
+    if (!application) return res.status(404).json({ message: "Application not found" });
+    res.json({ application });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─── PATCH /api/admin/applications/:id/mark-under-review ─────────────────────
+router.patch(
+  "/applications/:id/mark-under-review",
+  requireAdmin,
+  requireRole("superAdmin", "supportAdmin"),
+  async (req, res) => {
+    try {
+      const application = await SoulteeApplication.findByIdAndUpdate(
+        req.params.id,
+        {
+          status: "under_review",
+          $push: {
+            auditLog: {
+              action:    "under_review",
+              adminId:   req.admin.id,
+              adminName: req.admin.name,
+              comment:   "Application marked as under review",
+              timestamp: new Date(),
+            },
+          },
+        },
+        { new: true }
+      );
+      if (!application) return res.status(404).json({ message: "Application not found" });
+      res.json({ message: "Marked as under review", status: application.status });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
+// ─── PATCH /api/admin/applications/:id/approve ───────────────────────────────
+router.patch(
+  "/applications/:id/approve",
+  requireAdmin,
+  requireRole("superAdmin"),
+  async (req, res) => {
+    const { badge = "Silver", comment = "" } = req.body;
+
+    if (!["Gold", "Silver", "Diamond"].includes(badge)) {
+      return res.status(400).json({ message: "badge must be Gold, Silver, or Diamond" });
+    }
+
+    try {
+      const application = await SoulteeApplication.findByIdAndUpdate(
+        req.params.id,
+        {
+          status:       "approved",
+          badgeLevel:   badge,
+          adminComment: comment,
+          reviewedBy:   req.admin.id,
+          reviewedAt:   new Date(),
+          $push: {
+            auditLog: {
+              action:    "approved",
+              adminId:   req.admin.id,
+              adminName: req.admin.name,
+              comment:   comment || "Application approved",
+              timestamp: new Date(),
+            },
+          },
+        },
+        { new: true }
+      );
+      if (!application) return res.status(404).json({ message: "Application not found" });
+
+      // Sync approval to Firestore + upsert MongoDB Soultee profile
+      try {
+        const db = getFirestore();
+        await db.collection("users").doc(application.firebaseUid).update({
+          role:          "soultee",
+          rolePending:   false,
+          soulteeType:   application.category || "General",
+          soulteeStatus: "Active",
+          badge,
+        });
+
+        await Soultee.findOneAndUpdate(
+          { firebaseUid: application.firebaseUid },
+          {
+            firebaseUid:     application.firebaseUid,
+            name:            application.name,
+            gender:          application.gender || "",
+            specialization:  (application.specializations || []).join(", "),
+            languages:       application.languages || [],
+            feePerSession:   application.feePerSession || 0,
+            bio:             application.bio || "",
+            profileImage:    application.profileImageUrl || "",
+            experienceYears: application.experienceYears || 0,
+            status:          "offline",
+          },
+          { upsert: true, new: true }
+        );
+      } catch (firestoreErr) {
+        console.error("[Admin Approve] Firestore sync error:", firestoreErr.message);
+      }
+
+      // Real-time notification to the applicant
+      if (req.app.get("io")) {
+        await notifyApplicant(req.app.get("io"), {
+          recipientUid: application.firebaseUid,
+          type:         "application_approved",
+          title:        "Congratulations! Application Approved 🎉",
+          body:         `Your SOULTEE application has been approved. You have been assigned a ${badge} badge.`,
+          data: {
+            type:       "application_approved",
+            badge,
+            category:   application.category || "",
+          },
+        });
+      }
+
+      res.json({ message: "Application approved", badge, status: "approved" });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
+// ─── PATCH /api/admin/applications/:id/reject ────────────────────────────────
+router.patch(
+  "/applications/:id/reject",
+  requireAdmin,
+  requireRole("superAdmin"),
+  async (req, res) => {
+    const { comment = "" } = req.body;
+
+    try {
+      const application = await SoulteeApplication.findByIdAndUpdate(
+        req.params.id,
+        {
+          status:       "rejected",
+          adminComment: comment,
+          reviewedBy:   req.admin.id,
+          reviewedAt:   new Date(),
+          $push: {
+            auditLog: {
+              action:    "rejected",
+              adminId:   req.admin.id,
+              adminName: req.admin.name,
+              comment:   comment || "Application rejected",
+              timestamp: new Date(),
+            },
+          },
+        },
+        { new: true }
+      );
+      if (!application) return res.status(404).json({ message: "Application not found" });
+
+      // Revert Firestore role to Student if it was changed
+      try {
+        const db = getFirestore();
+        await db.collection("users").doc(application.firebaseUid).update({
+          rolePending: false,
+        });
+      } catch (_) { /* non-fatal */ }
+
+      if (req.app.get("io")) {
+        await notifyApplicant(req.app.get("io"), {
+          recipientUid: application.firebaseUid,
+          type:         "application_rejected",
+          title:        "SOULTEE Application Update",
+          body:         comment
+            ? `Your application was not approved: ${comment}`
+            : "Your SOULTEE application was not approved at this time.",
+          data: { type: "application_rejected", comment },
+        });
+      }
+
+      res.json({ message: "Application rejected", status: "rejected" });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
+// ─── PATCH /api/admin/applications/:id/request-changes ───────────────────────
+router.patch(
+  "/applications/:id/request-changes",
+  requireAdmin,
+  requireRole("superAdmin", "supportAdmin"),
+  async (req, res) => {
+    const { comment = "" } = req.body;
+    if (!comment.trim()) {
+      return res.status(400).json({ message: "A feedback comment is required when requesting changes" });
+    }
+
+    try {
+      const application = await SoulteeApplication.findByIdAndUpdate(
+        req.params.id,
+        {
+          status:       "revision_requested",
+          adminComment: comment,
+          reviewedBy:   req.admin.id,
+          reviewedAt:   new Date(),
+          $push: {
+            auditLog: {
+              action:    "revision_requested",
+              adminId:   req.admin.id,
+              adminName: req.admin.name,
+              comment,
+              timestamp: new Date(),
+            },
+          },
+        },
+        { new: true }
+      );
+      if (!application) return res.status(404).json({ message: "Application not found" });
+
+      if (req.app.get("io")) {
+        await notifyApplicant(req.app.get("io"), {
+          recipientUid: application.firebaseUid,
+          type:         "application_revision_requested",
+          title:        "Action Required: Update Your Application",
+          body:         comment,
+          data: { type: "application_revision_requested", comment },
+        });
+      }
+
+      res.json({ message: "Revision requested", status: "revision_requested" });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
 export default router;
+

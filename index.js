@@ -15,6 +15,7 @@ import createSoulteeDashboardRoutes from "./routes/soulteeDashboardRoutes.js";
 import createChatRoutes from "./routes/chatRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
 import otpRoutes from "./routes/otpRoutes.js";
+import createSoulteeApplicationRoutes from "./routes/soulteeApplicationRoutes.js";
 import "./config/firebase.js"; // initialise Firebase Admin on startup
 import { registerRealtimeServer, resetRealtimePresenceState } from "./sockets/realtimeServer.js";
 
@@ -35,6 +36,9 @@ registerRealtimeServer(io);
 app.use(cors());
 app.use(express.json());
 
+// ─── Expose io to route handlers (for admin application notifications) ────────
+app.set("io", io);
+
 // ─── REST Routes ──────────────────────────────────────────────────────────────
 app.use("/api/souljar",           souljarRoutes);
 app.use("/api/soultees",          soulteeRoutes);
@@ -43,8 +47,9 @@ app.use("/api/settings",          settingsRoutes);
 app.use("/api/soulpana",          createSoulpanaRoutes(io));
 app.use("/api/soultee-dashboard", createSoulteeDashboardRoutes(io));
 app.use("/api/chat",              createChatRoutes(io));
-app.use("/api/notifications",     notificationRoutes);
-app.use("/api/otp",               otpRoutes);
+app.use("/api/notifications",         notificationRoutes);
+app.use("/api/otp",                   otpRoutes);
+app.use("/api/soultee-application",   createSoulteeApplicationRoutes(io));
 app.use(express.static(join(__dirname, "public")));
 app.use("/uploads", express.static(join(__dirname, "uploads")));
 
