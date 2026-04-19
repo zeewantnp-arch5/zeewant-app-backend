@@ -707,6 +707,8 @@ router.get("/dashboard/stats", requireAdmin, async (req, res) => {
     const weekAgo    = new Date(now - 7 * 24 * 60 * 60 * 1000);
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
+    const threeDaysAgo = new Date(now - 3 * 24 * 60 * 60 * 1000);
+
     const [
       totalSoultees,
       activeSoultees,
@@ -723,6 +725,8 @@ router.get("/dashboard/stats", requireAdmin, async (req, res) => {
       totalSouljar,
       recentLogins,
       totalAdmins,
+      adminRoleSummaryRaw,
+      urgentApplications,
     ] = await Promise.all([
       Soultee.countDocuments(),
       Soultee.countDocuments({ status: { $in: ["online", "busy"] } }),
@@ -739,7 +743,28 @@ router.get("/dashboard/stats", requireAdmin, async (req, res) => {
       Souljar.countDocuments(),
       AuditLog.countDocuments({ action: "login", createdAt: { $gte: dayAgo } }),
       AdminUser.countDocuments({ isActive: true }),
+      AdminUser.aggregate([
+        { $match: { isActive: true } },
+        { $group: { _id: "$role", count: { $sum: 1 } } },
+        { $sort: { _id: 1 } },
+      ]),
+      SoulteeApplication.countDocuments({ status: "pending", createdAt: { $lte: threeDaysAgo } }),
     ]);
+
+    // Firestore total users count
+    let totalUsers = 0;
+    try {
+      const db = getFirestore();
+      const snap = await db.collection("users").count().get();
+      totalUsers = snap.data().count;
+    } catch (_) {
+      // Fallback: use Soultee count if Firestore count fails
+      totalUsers = totalSoultees;
+    }
+
+    const adminRoleSummary = Object.fromEntries(
+      adminRoleSummaryRaw.map(r => [r._id, r.count])
+    );
 
     // Revenue estimate (sessions × avg fee)
     const revenuePipeline = await Session.aggregate([
@@ -779,11 +804,13 @@ router.get("/dashboard/stats", requireAdmin, async (req, res) => {
 
     res.json({
       users: {
+        totalUsers,
         totalSoultees,
         activeSoultees,
         totalLinks,
         activeLinks,
         totalAdmins,
+        adminRoleSummary,
       },
       sessions: {
         total: totalSessions,
@@ -797,6 +824,7 @@ router.get("/dashboard/stats", requireAdmin, async (req, res) => {
       },
       applications: {
         pending:          pendingApplications,
+        urgent:           urgentApplications,
         approvedThisMonth,
         rejected:         rejectedApplications,
         byStatus:         appStatusMap,
@@ -937,6 +965,46 @@ router.patch(
         description: `User ${req.params.uid} unblocked`,
       });
       res.json({ message: "User unblocked" });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
+// DELETE /api/admin/users/:uid
+router.delete(
+  "/users/:uid",
+  requireAdmin,
+  requireRole("superAdmin"),
+  async (req, res) => {
+    try {
+      const { uid } = req.params;
+      const db = getFirestore();
+
+      const userRef = db.collection("users").doc(uid);
+      const doc = await userRef.get();
+      if (!doc.exists) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      await userRef.delete();
+
+      // Best-effort deletion from Firebase Auth (may fail if auth user does not exist).
+      try {
+        await admin.auth().deleteUser(uid);
+      } catch (_) {
+        // Intentionally ignore so Firestore cleanup can still succeed.
+      }
+
+      await writeAuditLog(req, {
+        action: "user_deleted",
+        resourceType: "user",
+        resourceId: uid,
+        description: `User ${uid} deleted`,
+        severity: "critical",
+      });
+
+      res.json({ message: "User deleted" });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
