@@ -1,5 +1,6 @@
 import express from "express";
 import Soultee from "../models/Soultee.js";
+import admin from "../config/firebase.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import Session from "../models/Session.js";
 import Souljar from "../models/souljar.js";
@@ -60,9 +61,31 @@ export default function createSoulteeDashboardRoutes(io) {
         return res.status(400).json({ message: "firebaseUid and name are required" });
       }
 
+      if (!admin.apps.length) {
+        return res.status(500).json({ message: "Firebase not initialised" });
+      }
+
+      const userSnap = await admin.firestore().collection("users").doc(firebaseUid).get();
+      const userData = userSnap.data() || {};
+      const isApproved = (userData.soulteeStatus || "").toString().toLowerCase() === "active" &&
+        userData.rolePending !== true;
+
+      if (!isApproved) {
+        return res.status(403).json({ message: "SOULTEE profile is not approved yet" });
+      }
+
       const soultee = await Soultee.findOneAndUpdate(
         { firebaseUid },
-        { firebaseUid, name, gender, specialization, experienceYears, languages, bio },
+        {
+          firebaseUid,
+          name,
+          category: (userData.soulteeType || "").toString(),
+          gender,
+          specialization,
+          experienceYears,
+          languages,
+          bio,
+        },
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
 
@@ -75,6 +98,7 @@ export default function createSoulteeDashboardRoutes(io) {
         experienceYears: experienceYears || null,
         languages: languages || [],
         bio: bio || null,
+        category: soultee.category || null,
         status: soultee.status,
         rating: soultee.rating,
         profileImage: soultee.profileImage || null,
@@ -96,6 +120,23 @@ export default function createSoulteeDashboardRoutes(io) {
       const { status } = req.body;
       if (!["online", "offline", "busy"].includes(status)) {
         return res.status(400).json({ message: "Invalid status. Use: online, offline, busy" });
+      }
+
+      if (!admin.apps.length) {
+        return res.status(500).json({ message: "Firebase not initialised" });
+      }
+
+      const userSnap = await admin
+        .firestore()
+        .collection("users")
+        .doc(req.params.soulteeUid)
+        .get();
+      const userData = userSnap.data() || {};
+      const isApproved = (userData.soulteeStatus || "").toString().toLowerCase() === "active" &&
+        userData.rolePending !== true;
+
+      if (!isApproved && status !== "offline") {
+        return res.status(403).json({ message: "SOULTEE approval is required before going online" });
       }
 
       const soultee = await Soultee.findOneAndUpdate(

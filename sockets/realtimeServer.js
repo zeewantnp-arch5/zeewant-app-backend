@@ -1,6 +1,7 @@
 import Message from "../models/Message.js";
 import Soultee from "../models/Soultee.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
+import admin from "../config/firebase.js";
 import { buildPersonalRoom } from "../services/notificationService.js";
 import { createPersistentMessage, serializeMessage } from "../services/messageService.js";
 
@@ -126,6 +127,21 @@ export function registerRealtimeServer(io) {
       if (!uid) {
         return emitSocketError(socket, "uid is required for soultee presence");
       }
+
+       const soultee = await Soultee.findOne({ firebaseUid: uid }).select("firebaseUid").lean();
+       if (!soultee) {
+         return emitSocketError(socket, "Soultee profile is not approved yet");
+       }
+
+       if (admin.apps.length) {
+         const userSnap = await admin.firestore().collection("users").doc(uid).get();
+         const userData = userSnap.data() || {};
+         const isApproved = (userData.soulteeStatus || "").toString().toLowerCase() === "active" &&
+           userData.rolePending !== true;
+         if (!isApproved) {
+           return emitSocketError(socket, "Admin approval is required before going online");
+         }
+       }
 
       const becameOnline = addSocket(soulteeSocketsByUid, uid, socket.id);
       socket.data.soulteeUid = uid;

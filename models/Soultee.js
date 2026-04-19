@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 const soulteeSchema = new mongoose.Schema({
   firebaseUid: { type: String, unique: true, sparse: true }, // Firebase Auth UID
   name: { type: String, required: true },
+  category: String,
   gender: String,
   specialization: String,
   experienceYears: Number,

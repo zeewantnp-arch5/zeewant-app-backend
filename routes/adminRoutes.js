@@ -471,6 +471,23 @@ function getFirestore() {
   return admin.firestore();
 }
 
+async function clearSoulteeState(db, uid) {
+  await db.collection("users").doc(uid).set(
+    {
+      role: "student",
+      rolePending: false,
+      soulteeType: admin.firestore.FieldValue.delete(),
+      soulteeStatus: admin.firestore.FieldValue.delete(),
+      badge: admin.firestore.FieldValue.delete(),
+      profileSubmittedAt: admin.firestore.FieldValue.delete(),
+      updatedAt: new Date(),
+    },
+    { merge: true }
+  );
+
+  await Soultee.findOneAndDelete({ firebaseUid: uid });
+}
+
 // ─── GET /api/admin/soultees/firebase-all ─────────────────────────────────────
 router.get("/soultees/firebase-all", requireAdmin, async (req, res) => {
   try {
@@ -523,6 +540,7 @@ router.patch(
         {
           firebaseUid: uid,
           name: data.name || "Unknown",
+          category: soulteeType || data.soulteeType || "General",
           gender: data.gender || "",
           specialization: Array.isArray(data.specialization)
             ? data.specialization.join(", ")
@@ -628,6 +646,23 @@ router.patch(
       const db = getFirestore();
       await db.collection("users").doc(uid).update({ soulteeType });
       res.json({ message: `Type updated to ${soulteeType}` });
+    } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  }
+);
+
+router.delete(
+  "/soultees/:uid",
+  requireAdmin,
+  requireRole("superAdmin"),
+  async (req, res) => {
+    const { uid } = req.params;
+    try {
+      const db = getFirestore();
+      await clearSoulteeState(db, uid);
+      await SoulteeApplication.deleteMany({ firebaseUid: uid });
+      res.json({ message: "SOULTEE profile deleted" });
     } catch (error) {
       res.status(500).json({ message: error.message });
     }
@@ -1526,6 +1561,28 @@ router.patch(
       }
 
       res.json({ message: "Revision requested", status: "revision_requested" });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
+router.delete(
+  "/applications/:id",
+  requireAdmin,
+  requireRole("superAdmin"),
+  async (req, res) => {
+    try {
+      const application = await SoulteeApplication.findById(req.params.id);
+      if (!application) {
+        return res.status(404).json({ message: "Application not found" });
+      }
+
+      const db = getFirestore();
+      await clearSoulteeState(db, application.firebaseUid);
+      await SoulteeApplication.findByIdAndDelete(req.params.id);
+
+      res.json({ message: "Application deleted" });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
