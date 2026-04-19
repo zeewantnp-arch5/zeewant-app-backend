@@ -16,6 +16,7 @@ import createChatRoutes from "./routes/chatRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
 import otpRoutes from "./routes/otpRoutes.js";
 import createSoulteeApplicationRoutes from "./routes/soulteeApplicationRoutes.js";
+import SystemSettings from "./models/SystemSettings.js";
 import "./config/firebase.js"; // initialise Firebase Admin on startup
 import { registerRealtimeServer, resetRealtimePresenceState } from "./sockets/realtimeServer.js";
 
@@ -59,6 +60,7 @@ const PORT = process.env.PORT || 5000;
 
 async function startServer() {
   await connectDB();
+  await SystemSettings.ensureDefaults();
   await resetRealtimePresenceState();
 
   httpServer.listen(PORT, "0.0.0.0", () => {

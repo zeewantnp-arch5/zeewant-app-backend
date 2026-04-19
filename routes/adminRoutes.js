@@ -3,8 +3,13 @@ import jwt from "jsonwebtoken";
 import multer from "multer";
 import Souljar from "../models/souljar.js";
 import Soultee from "../models/Soultee.js";
+import Soulpana from "../models/Soulpana.js";
+import Session from "../models/Session.js";
+import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import AdminUser, { ADMIN_ROLES } from "../models/AdminUser.js";
 import SoulteeApplication, { computeCompletenessScore, computeRiskFlags } from "../models/SoulteeApplication.js";
+import AuditLog from "../models/AuditLog.js";
+import SystemSettings from "../models/SystemSettings.js";
 import FCMToken from "../models/FCMToken.js";
 import Notification from "../models/Notification.js";
 import admin, { syncNotificationToRTDB, sendPushNotification } from "../config/firebase.js";
@@ -108,6 +113,21 @@ router.post("/login", async (req, res) => {
         console.log(`[Admin] No Firebase Auth user for ${adminUser.email}: ${e.message}`);
       }
     }
+
+    // Log login action
+    try {
+      await AuditLog.create({
+        adminId:    adminUser._id.toString(),
+        adminName:  adminUser.name,
+        adminRole:  adminUser.role,
+        action:     "login",
+        resourceType: "admin",
+        description: `Admin logged in: ${adminUser.email}`,
+        severity:   "info",
+        ipAddress:  req.ip || req.headers["x-forwarded-for"] || "",
+        userAgent:  req.headers["user-agent"] || "",
+      });
+    } catch (_) { /* non-fatal */ }
 
     return res.json({
       token,
@@ -614,6 +634,558 @@ router.patch(
   }
 );
 
+
+// ════════════════════════════════════════════════════════════════════════════
+//  AUDIT LOG HELPER — call from any route handler
+// ════════════════════════════════════════════════════════════════════════════
+
+async function writeAuditLog(req, { action, resourceType, resourceId, resourceName, description, severity = "info", metadata = {} }) {
+  try {
+    await AuditLog.create({
+      adminId:      req.admin.id,
+      adminName:    req.admin.name,
+      adminRole:    req.admin.role,
+      action,
+      resourceType,
+      resourceId,
+      resourceName,
+      description,
+      severity,
+      metadata,
+      ipAddress: req.ip || req.headers["x-forwarded-for"] || "",
+      userAgent: req.headers["user-agent"] || "",
+    });
+  } catch (e) {
+    console.error("[AuditLog] Write failed:", e.message);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  LIVE DASHBOARD STATS
+// ════════════════════════════════════════════════════════════════════════════
+
+// GET /api/admin/dashboard/stats
+router.get("/dashboard/stats", requireAdmin, async (req, res) => {
+  try {
+    const now        = new Date();
+    const dayAgo     = new Date(now - 24 * 60 * 60 * 1000);
+    const weekAgo    = new Date(now - 7 * 24 * 60 * 60 * 1000);
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const [
+      totalSoultees,
+      activeSoultees,
+      totalSessions,
+      completedSessions,
+      totalLinks,
+      activeLinks,
+      pendingApplications,
+      approvedThisMonth,
+      rejectedApplications,
+      totalSoulpana,
+      pendingSoulpana,
+      answeredSoulpana,
+      totalSouljar,
+      recentLogins,
+      totalAdmins,
+    ] = await Promise.all([
+      Soultee.countDocuments(),
+      Soultee.countDocuments({ status: { $in: ["online", "busy"] } }),
+      Session.countDocuments(),
+      Session.countDocuments({ status: "completed" }),
+      StudentSoulteeLink.countDocuments(),
+      StudentSoulteeLink.countDocuments({ status: "active" }),
+      SoulteeApplication.countDocuments({ status: "pending" }),
+      SoulteeApplication.countDocuments({ status: "approved", reviewedAt: { $gte: monthStart } }),
+      SoulteeApplication.countDocuments({ status: "rejected" }),
+      Soulpana.countDocuments(),
+      Soulpana.countDocuments({ status: "pending" }),
+      Soulpana.countDocuments({ status: "answered" }),
+      Souljar.countDocuments(),
+      AuditLog.countDocuments({ action: "login", createdAt: { $gte: dayAgo } }),
+      AdminUser.countDocuments({ isActive: true }),
+    ]);
+
+    // Revenue estimate (sessions × avg fee)
+    const revenuePipeline = await Session.aggregate([
+      { $match: { status: "completed" } },
+      { $group: { _id: null, total: { $sum: "$sessionFee" } } },
+    ]);
+    const totalRevenue = revenuePipeline[0]?.total ?? 0;
+
+    // Weekly session trend (last 7 days)
+    const weeklyTrend = await Session.aggregate([
+      { $match: { createdAt: { $gte: weekAgo } } },
+      { $group: {
+        _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+        count: { $sum: 1 },
+      }},
+      { $sort: { _id: 1 } },
+    ]);
+
+    // Soulpana categories
+    const soulpanaCategories = await Soulpana.aggregate([
+      { $group: { _id: "$category", count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 8 },
+    ]);
+
+    // Application status breakdown
+    const appStats = await SoulteeApplication.aggregate([
+      { $group: { _id: "$status", count: { $sum: 1 } } },
+    ]);
+    const appStatusMap = Object.fromEntries(appStats.map(a => [a._id, a.count]));
+
+    // SOULTEE category breakdown
+    const categoryStats = await SoulteeApplication.aggregate([
+      { $match: { status: "approved" } },
+      { $group: { _id: "$category", count: { $sum: 1 } } },
+    ]);
+
+    res.json({
+      users: {
+        totalSoultees,
+        activeSoultees,
+        totalLinks,
+        activeLinks,
+        totalAdmins,
+      },
+      sessions: {
+        total: totalSessions,
+        completed: completedSessions,
+        completionRate: totalSessions > 0 ? Math.round((completedSessions / totalSessions) * 100) : 0,
+        weeklyTrend,
+      },
+      revenue: {
+        total: totalRevenue,
+        currency: "NPR",
+      },
+      applications: {
+        pending:          pendingApplications,
+        approvedThisMonth,
+        rejected:         rejectedApplications,
+        byStatus:         appStatusMap,
+        byCategory:       Object.fromEntries(categoryStats.map(c => [c._id || "Unknown", c.count])),
+      },
+      soulpana: {
+        total:    totalSoulpana,
+        pending:  pendingSoulpana,
+        answered: answeredSoulpana,
+        closed:   totalSoulpana - pendingSoulpana - answeredSoulpana,
+        byCategory: soulpanaCategories.map(c => ({ category: c._id || "Other", count: c.count })),
+      },
+      souljar: { total: totalSouljar },
+      system: {
+        recentAdminLogins: recentLogins,
+        health: "healthy",
+        uptime: process.uptime(),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  USER MANAGEMENT (Firestore-backed)
+// ════════════════════════════════════════════════════════════════════════════
+
+// GET /api/admin/users?search=&role=&status=&limit=&page=
+router.get("/users", requireAdmin, async (req, res) => {
+  try {
+    const db      = getFirestore();
+    const limit   = Math.min(100, parseInt(req.query.limit) || 20);
+    const page    = Math.max(1, parseInt(req.query.page) || 1);
+    const search  = (req.query.search || "").toLowerCase().trim();
+    const roleFilter   = req.query.role   || "";
+    const statusFilter = req.query.status || "";
+
+    let query = db.collection("users");
+
+    // Fetch all (Firestore client-side filtering — acceptable for admin panel)
+    const snapshot = await query.get();
+    let users = [];
+    snapshot.forEach(doc => users.push({ uid: doc.id, ...doc.data() }));
+
+    // Apply filters
+    if (search) {
+      users = users.filter(u =>
+        (u.name || "").toLowerCase().includes(search) ||
+        (u.email || "").toLowerCase().includes(search) ||
+        (u.phone || "").includes(search)
+      );
+    }
+    if (roleFilter) {
+      users = users.filter(u => (u.role || "").toLowerCase() === roleFilter.toLowerCase());
+    }
+    if (statusFilter === "blocked") {
+      users = users.filter(u => u.blocked === true);
+    } else if (statusFilter === "active") {
+      users = users.filter(u => !u.blocked);
+    } else if (statusFilter === "pending") {
+      users = users.filter(u => u.rolePending === true);
+    }
+
+    // Sort by creation time desc
+    users.sort((a, b) => {
+      const ta = a.createdAt?.seconds ?? 0;
+      const tb = b.createdAt?.seconds ?? 0;
+      return tb - ta;
+    });
+
+    const total  = users.length;
+    const start  = (page - 1) * limit;
+    const paged  = users.slice(start, start + limit);
+
+    res.json({ users: paged, total, page, totalPages: Math.ceil(total / limit) });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// GET /api/admin/users/:uid
+router.get("/users/:uid", requireAdmin, async (req, res) => {
+  try {
+    const db  = getFirestore();
+    const doc = await db.collection("users").doc(req.params.uid).get();
+    if (!doc.exists) return res.status(404).json({ message: "User not found" });
+
+    // Also pull MongoDB data
+    const soultee   = await Soultee.findOne({ firebaseUid: req.params.uid }).lean();
+    const application = await SoulteeApplication.findOne({ firebaseUid: req.params.uid })
+      .select("status category completenessScore riskFlags submittedAt")
+      .lean();
+
+    res.json({ user: { uid: doc.id, ...doc.data() }, soultee, application });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// PATCH /api/admin/users/:uid/block
+router.patch(
+  "/users/:uid/block",
+  requireAdmin,
+  requireRole("superAdmin", "securityAdmin"),
+  async (req, res) => {
+    const { reason = "" } = req.body;
+    try {
+      const db = getFirestore();
+      await db.collection("users").doc(req.params.uid).update({
+        blocked: true, blockedAt: new Date().toISOString(), blockedReason: reason,
+      });
+      await writeAuditLog(req, {
+        action: "user_blocked", resourceType: "user", resourceId: req.params.uid,
+        description: `User ${req.params.uid} blocked. Reason: ${reason || "not specified"}`,
+        severity: "warn", metadata: { reason },
+      });
+      res.json({ message: "User blocked" });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
+// PATCH /api/admin/users/:uid/unblock
+router.patch(
+  "/users/:uid/unblock",
+  requireAdmin,
+  requireRole("superAdmin", "securityAdmin"),
+  async (req, res) => {
+    try {
+      const db = getFirestore();
+      await db.collection("users").doc(req.params.uid).update({
+        blocked: false, blockedAt: null, blockedReason: null,
+      });
+      await writeAuditLog(req, {
+        action: "user_unblocked", resourceType: "user", resourceId: req.params.uid,
+        description: `User ${req.params.uid} unblocked`,
+      });
+      res.json({ message: "User unblocked" });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
+// PATCH /api/admin/users/:uid/role
+router.patch(
+  "/users/:uid/role",
+  requireAdmin,
+  requireRole("superAdmin"),
+  async (req, res) => {
+    const { role } = req.body;
+    if (!role) return res.status(400).json({ message: "role is required" });
+    try {
+      const db = getFirestore();
+      await db.collection("users").doc(req.params.uid).update({ role });
+      await writeAuditLog(req, {
+        action: "user_role_changed", resourceType: "user", resourceId: req.params.uid,
+        description: `User role changed to ${role}`,
+        metadata: { newRole: role },
+      });
+      res.json({ message: "Role updated" });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
+// ════════════════════════════════════════════════════════════════════════════
+//  AUDIT / SYSTEM LOGS
+// ════════════════════════════════════════════════════════════════════════════
+
+// GET /api/admin/audit-logs?action=&severity=&adminId=&page=&limit=
+router.get("/audit-logs", requireAdmin, requireRole("superAdmin", "securityAdmin"), async (req, res) => {
+  try {
+    const page     = Math.max(1, parseInt(req.query.page) || 1);
+    const limit    = Math.min(200, parseInt(req.query.limit) || 50);
+    const skip     = (page - 1) * limit;
+    const filter   = {};
+    if (req.query.action)   filter.action   = req.query.action;
+    if (req.query.severity) filter.severity = req.query.severity;
+    if (req.query.adminId)  filter.adminId  = req.query.adminId;
+    if (req.query.from || req.query.to) {
+      filter.createdAt = {};
+      if (req.query.from) filter.createdAt.$gte = new Date(req.query.from);
+      if (req.query.to)   filter.createdAt.$lte = new Date(req.query.to);
+    }
+
+    const [logs, total] = await Promise.all([
+      AuditLog.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      AuditLog.countDocuments(filter),
+    ]);
+
+    res.json({ logs, total, page, totalPages: Math.ceil(total / limit) });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// POST /api/admin/audit-logs  (client-triggered log — e.g., video viewed)
+router.post("/audit-logs", requireAdmin, async (req, res) => {
+  try {
+    const { action, resourceType, resourceId, resourceName, description, severity, metadata } = req.body;
+    const log = await AuditLog.create({
+      adminId:      req.admin.id,
+      adminName:    req.admin.name,
+      adminRole:    req.admin.role,
+      action:       action || "data_export",
+      resourceType, resourceId, resourceName,
+      description:  description || action,
+      severity:     severity || "info",
+      metadata:     metadata || {},
+      ipAddress: req.ip,
+      userAgent: req.headers["user-agent"],
+    });
+    res.status(201).json({ log });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  PLATFORM SETTINGS
+// ════════════════════════════════════════════════════════════════════════════
+
+// GET /api/admin/settings?category=
+router.get("/settings", requireAdmin, requireRole("superAdmin"), async (req, res) => {
+  try {
+    await SystemSettings.ensureDefaults();
+    const filter = {};
+    if (req.query.category) filter.category = req.query.category;
+    const settings = await SystemSettings.find(filter).sort({ category: 1, key: 1 }).lean();
+    res.json({ settings });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// PATCH /api/admin/settings/:key
+router.patch("/settings/:key", requireAdmin, requireRole("superAdmin"), async (req, res) => {
+  const { value } = req.body;
+  if (value === undefined) return res.status(400).json({ message: "value is required" });
+  try {
+    const setting = await SystemSettings.findOneAndUpdate(
+      { key: req.params.key },
+      { value, updatedBy: req.admin.id, updatedByName: req.admin.name },
+      { new: true }
+    );
+    if (!setting) return res.status(404).json({ message: "Setting not found" });
+    await writeAuditLog(req, {
+      action: "settings_updated", resourceType: "settings", resourceId: req.params.key,
+      description: `Setting "${req.params.key}" updated to: ${JSON.stringify(value)}`,
+      metadata: { key: req.params.key, value },
+    });
+    res.json({ setting });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  ADMIN USER MANAGEMENT (list & manage admin accounts)
+// ════════════════════════════════════════════════════════════════════════════
+
+// GET /api/admin/admins?role=&search=
+router.get("/admins", requireAdmin, requireRole("superAdmin"), async (req, res) => {
+  try {
+    const filter = { isActive: true };
+    if (req.query.role) filter.role = req.query.role;
+    if (req.query.search) {
+      filter.$or = [
+        { name:  { $regex: req.query.search, $options: "i" } },
+        { email: { $regex: req.query.search, $options: "i" } },
+      ];
+    }
+    const admins = await AdminUser.find(filter)
+      .select("-passwordHash -resetToken -resetTokenExpiry")
+      .sort({ createdAt: -1 })
+      .lean();
+    res.json({ admins, total: admins.length });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// DELETE /api/admin/admins/:id
+router.delete(
+  "/admins/:id",
+  requireAdmin,
+  requireRole("superAdmin"),
+  async (req, res) => {
+    try {
+      if (req.params.id === req.admin.id) {
+        return res.status(400).json({ message: "Cannot delete your own account" });
+      }
+      const admin = await AdminUser.findByIdAndUpdate(req.params.id, { isActive: false }, { new: true });
+      if (!admin) return res.status(404).json({ message: "Admin not found" });
+      await writeAuditLog(req, {
+        action: "admin_deleted", resourceType: "admin", resourceId: req.params.id,
+        resourceName: admin.name,
+        description: `Admin account deactivated: ${admin.email}`,
+        severity: "warn",
+      });
+      res.json({ message: "Admin deactivated" });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
+// ════════════════════════════════════════════════════════════════════════════
+//  SOULPANA ADMIN MANAGEMENT
+// ════════════════════════════════════════════════════════════════════════════
+
+// GET /api/admin/soulpana?status=&category=&soulteeType=&page=&limit=
+router.get("/soulpana", requireAdmin, async (req, res) => {
+  try {
+    const page   = Math.max(1, parseInt(req.query.page) || 1);
+    const limit  = Math.min(100, parseInt(req.query.limit) || 20);
+    const skip   = (page - 1) * limit;
+    const filter = {};
+    if (req.query.status)     filter.status     = req.query.status;
+    if (req.query.category)   filter.category   = req.query.category;
+    if (req.query.soulteeType) filter.soulteeType = req.query.soulteeType;
+    if (req.query.search) {
+      filter.$or = [
+        { title:       { $regex: req.query.search, $options: "i" } },
+        { description: { $regex: req.query.search, $options: "i" } },
+      ];
+    }
+    const [questions, total] = await Promise.all([
+      Soulpana.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Soulpana.countDocuments(filter),
+    ]);
+    res.json({ questions, total, page, totalPages: Math.ceil(total / limit) });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// PATCH /api/admin/soulpana/:id/assign
+router.patch(
+  "/soulpana/:id/assign",
+  requireAdmin,
+  requireRole("superAdmin", "supportAdmin"),
+  async (req, res) => {
+    const { soulteeUid, soulteeName } = req.body;
+    try {
+      const q = await Soulpana.findByIdAndUpdate(
+        req.params.id,
+        { assignedSoulteeUid: soulteeUid, assignedSoulteeName: soulteeName },
+        { new: true }
+      );
+      if (!q) return res.status(404).json({ message: "Question not found" });
+      await writeAuditLog(req, {
+        action: "soulpana_assigned", resourceType: "soulpana", resourceId: req.params.id,
+        resourceName: q.title,
+        description: `Soulpana question assigned to ${soulteeName}`,
+        metadata: { soulteeUid, soulteeName },
+      });
+      res.json({ message: "Assigned", question: q });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
+// PATCH /api/admin/soulpana/:id/close
+router.patch(
+  "/soulpana/:id/close",
+  requireAdmin,
+  requireRole("superAdmin", "supportAdmin"),
+  async (req, res) => {
+    try {
+      const q = await Soulpana.findByIdAndUpdate(
+        req.params.id,
+        { status: "closed" },
+        { new: true }
+      );
+      if (!q) return res.status(404).json({ message: "Question not found" });
+      await writeAuditLog(req, {
+        action: "soulpana_closed", resourceType: "soulpana", resourceId: req.params.id,
+        description: `Soulpana question "${q.title}" closed by admin`,
+      });
+      res.json({ message: "Closed" });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
+// ════════════════════════════════════════════════════════════════════════════
+//  VIDEO ACCESS — Secure signed URL for SOULTEE intro videos
+// ════════════════════════════════════════════════════════════════════════════
+
+// GET /api/admin/media/signed-url?path=soultee-applications/uid/video.mp4
+router.get("/media/signed-url", requireAdmin, async (req, res) => {
+  const { path: filePath } = req.query;
+  if (!filePath) return res.status(400).json({ message: "path is required" });
+
+  // Only allow paths within controlled directories
+  const allowed = ["soultee-applications/", "admin-avatars/"];
+  if (!allowed.some(prefix => filePath.startsWith(prefix))) {
+    return res.status(403).json({ message: "Access denied to this file path" });
+  }
+
+  try {
+    if (!admin.apps.length) return res.status(500).json({ message: "Firebase not initialised" });
+    const bucket = admin.storage().bucket();
+    const [url] = await bucket.file(filePath).getSignedUrl({
+      action:  "read",
+      expires: Date.now() + 60 * 60 * 1000, // 1-hour short-lived URL
+    });
+    // Log access
+    await writeAuditLog(req, {
+      action: "video_viewed", resourceType: "media", resourceId: filePath,
+      description: `Admin viewed media: ${filePath}`,
+    });
+    res.json({ url, expiresIn: 3600 });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
 
 // ════════════════════════════════════════════════════════════════════════════
 //  SOULTEE APPLICATION MANAGEMENT
