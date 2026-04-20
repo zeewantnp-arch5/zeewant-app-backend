@@ -23,6 +23,8 @@ import analyticsRoutes from "./routes/analyticsRoutes.js";
 import { registerAnalyticsNamespace } from "./sockets/analyticsNamespace.js";
 import securityRoutes from "./routes/securityRoutes.js";
 import { registerSecurityNamespace } from "./sockets/securityNamespace.js";
+import marketingRoutes from "./routes/marketingRoutes.js";
+import { registerMarketingNamespace } from "./sockets/marketingNamespace.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -38,6 +40,7 @@ const io = new Server(httpServer, {
 registerRealtimeServer(io);
 registerAnalyticsNamespace(io);
 registerSecurityNamespace(io);
+registerMarketingNamespace(io);
 
 // ─── Express middleware ───────────────────────────────────────────────────────
 app.use(cors());
@@ -59,6 +62,7 @@ app.use("/api/otp",                   otpRoutes);
 app.use("/api/soultee-application",   createSoulteeApplicationRoutes(io));
 app.use("/api/analytics",             analyticsRoutes);
 app.use("/api/security",              securityRoutes);
+app.use("/api/marketing",             marketingRoutes);
 app.use(express.static(join(__dirname, "public")));
 app.use("/uploads", express.static(join(__dirname, "uploads")));
 
