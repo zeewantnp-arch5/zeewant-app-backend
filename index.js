@@ -19,6 +19,8 @@ import createSoulteeApplicationRoutes from "./routes/soulteeApplicationRoutes.js
 import SystemSettings from "./models/SystemSettings.js";
 import "./config/firebase.js"; // initialise Firebase Admin on startup
 import { registerRealtimeServer, resetRealtimePresenceState } from "./sockets/realtimeServer.js";
+import analyticsRoutes from "./routes/analyticsRoutes.js";
+import { registerAnalyticsNamespace } from "./sockets/analyticsNamespace.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -32,6 +34,7 @@ const io = new Server(httpServer, {
   cors: { origin: "*", methods: ["GET", "POST"] },
 });
 registerRealtimeServer(io);
+registerAnalyticsNamespace(io);
 
 // ─── Express middleware ───────────────────────────────────────────────────────
 app.use(cors());
@@ -51,6 +54,7 @@ app.use("/api/chat",              createChatRoutes(io));
 app.use("/api/notifications",         notificationRoutes);
 app.use("/api/otp",                   otpRoutes);
 app.use("/api/soultee-application",   createSoulteeApplicationRoutes(io));
+app.use("/api/analytics",             analyticsRoutes);
 app.use(express.static(join(__dirname, "public")));
 app.use("/uploads", express.static(join(__dirname, "uploads")));
 
