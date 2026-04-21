@@ -159,6 +159,28 @@ export async function verifyOTP(uid, code) {
   return { valid: true };
 }
 
+// ─── Engagement sync (likes / dislikes) ──────────────────────────────────────
+/**
+ * Sync like / dislike counts to Firebase RTDB at /engagement/{questionId}.
+ * Clients can listen to this path for real-time badge updates in list views.
+ * @param {string} questionId  MongoDB _id string
+ * @param {number} likeCount
+ * @param {number} dislikeCount
+ */
+export async function syncEngagementToRTDB(questionId, likeCount, dislikeCount) {
+  const db = getDB();
+  if (!db) return;
+  try {
+    await db.ref(`engagement/${questionId}`).set({
+      likeCount,
+      dislikeCount,
+      updatedAt: Date.now(),
+    });
+  } catch (err) {
+    console.error("RTDB syncEngagement error:", err.message);
+  }
+}
+
 // ─── FCM push notification ────────────────────────────────────────────────────
 /**
  * Send a Firebase Cloud Messaging push notification.

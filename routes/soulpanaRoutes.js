@@ -7,6 +7,7 @@ import Soulpana from "../models/Soulpana.js";
 import SoulpanaComment from "../models/SoulpanaComment.js";
 import Soultee from "../models/Soultee.js";
 import { emitToUser } from "../services/notificationService.js";
+import { syncEngagementToRTDB } from "../config/firebase.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -52,6 +53,7 @@ export default function createSoulpanaRoutes(io) {
         userId, title, category, soulteeType,
         description, anonymous, emotionTag,
         assignedSoulteeUid, assignedSoulteeName,
+        mediaUrls,   // Firebase Storage URLs pre-uploaded by the client
       } = req.body;
 
       if (!userId || !title || !category || !description) {
@@ -72,6 +74,22 @@ export default function createSoulpanaRoutes(io) {
         size: f.size,
       }));
 
+      // Normalise mediaUrls — accept a JSON string, a comma-separated string,
+      // or a plain array (Dio multipart sends each element as a separate field).
+      let parsedMediaUrls = [];
+      if (mediaUrls) {
+        if (Array.isArray(mediaUrls)) {
+          parsedMediaUrls = mediaUrls.filter(Boolean);
+        } else if (typeof mediaUrls === "string") {
+          try {
+            const parsed = JSON.parse(mediaUrls);
+            parsedMediaUrls = Array.isArray(parsed) ? parsed.filter(Boolean) : [parsed].filter(Boolean);
+          } catch {
+            parsedMediaUrls = mediaUrls.split(",").map((u) => u.trim()).filter(Boolean);
+          }
+        }
+      }
+
       const entry = await Soulpana.create({
         userId,
         title,
@@ -83,6 +101,7 @@ export default function createSoulpanaRoutes(io) {
         assignedSoulteeUid: assignedSoulteeUid || null,
         assignedSoulteeName: assignedSoulteeName || null,
         attachments,
+        mediaUrls: parsedMediaUrls,
       });
 
       // Respond immediately — socket work is fire-and-forget
@@ -277,6 +296,120 @@ export default function createSoulpanaRoutes(io) {
       if (!updated) return res.status(404).json({ message: "Not found" });
       io.emit("emotional_question_status_changed", { questionId: updated._id, status: updated.status });
       res.json(updated);
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ── POST /api/soulpana/:id/like  ──  toggle like ────────────────────────────
+  // Body: { userId }
+  // Returns: { questionId, likeCount, dislikeCount, userLiked, userDisliked }
+  router.post("/:id/like", async (req, res) => {
+    try {
+      const { userId } = req.body;
+      if (!userId) return res.status(400).json({ message: "userId is required" });
+
+      const question = await Soulpana.findById(req.params.id).select("likes dislikes").lean();
+      if (!question) return res.status(404).json({ message: "Question not found" });
+
+      const alreadyLiked = question.likes.includes(userId);
+
+      if (alreadyLiked) {
+        // Toggle off — remove the like
+        await Soulpana.findByIdAndUpdate(req.params.id, { $pull: { likes: userId } });
+      } else {
+        // Like and atomically remove any existing dislike from the same user
+        await Soulpana.findByIdAndUpdate(req.params.id, {
+          $addToSet: { likes: userId },
+          $pull:      { dislikes: userId },
+        });
+      }
+
+      const updated = await Soulpana.findById(req.params.id).select("likes dislikes").lean();
+      const payload = {
+        questionId:   req.params.id,
+        likeCount:    updated.likes.length,
+        dislikeCount: updated.dislikes.length,
+        userLiked:    updated.likes.includes(userId),
+        userDisliked: updated.dislikes.includes(userId),
+      };
+
+      // Broadcast to question room (open thread) and all connected clients (list views)
+      io.to(`question:${req.params.id}`).emit("engagement_updated", payload);
+      io.emit("engagement_updated", payload);
+
+      // Fire-and-forget RTDB sync for Firebase real-time listeners
+      syncEngagementToRTDB(req.params.id, payload.likeCount, payload.dislikeCount);
+
+      res.json(payload);
+    } catch (err) {
+      console.error("Like toggle error:", err);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ── POST /api/soulpana/:id/dislike  ──  toggle dislike ──────────────────────
+  // Body: { userId }
+  // Returns: { questionId, likeCount, dislikeCount, userLiked, userDisliked }
+  router.post("/:id/dislike", async (req, res) => {
+    try {
+      const { userId } = req.body;
+      if (!userId) return res.status(400).json({ message: "userId is required" });
+
+      const question = await Soulpana.findById(req.params.id).select("likes dislikes").lean();
+      if (!question) return res.status(404).json({ message: "Question not found" });
+
+      const alreadyDisliked = question.dislikes.includes(userId);
+
+      if (alreadyDisliked) {
+        // Toggle off — remove the dislike
+        await Soulpana.findByIdAndUpdate(req.params.id, { $pull: { dislikes: userId } });
+      } else {
+        // Dislike and atomically remove any existing like from the same user
+        await Soulpana.findByIdAndUpdate(req.params.id, {
+          $addToSet: { dislikes: userId },
+          $pull:      { likes: userId },
+        });
+      }
+
+      const updated = await Soulpana.findById(req.params.id).select("likes dislikes").lean();
+      const payload = {
+        questionId:   req.params.id,
+        likeCount:    updated.likes.length,
+        dislikeCount: updated.dislikes.length,
+        userLiked:    updated.likes.includes(userId),
+        userDisliked: updated.dislikes.includes(userId),
+      };
+
+      io.to(`question:${req.params.id}`).emit("engagement_updated", payload);
+      io.emit("engagement_updated", payload);
+
+      syncEngagementToRTDB(req.params.id, payload.likeCount, payload.dislikeCount);
+
+      res.json(payload);
+    } catch (err) {
+      console.error("Dislike toggle error:", err);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ── GET /api/soulpana/:id/engagement  ──  fetch counts + caller's reaction ──
+  // Query: ?userId=<firebaseUid>  (optional — omit to skip user-specific flags)
+  router.get("/:id/engagement", async (req, res) => {
+    try {
+      const question = await Soulpana.findById(req.params.id)
+        .select("likes dislikes")
+        .lean();
+      if (!question) return res.status(404).json({ message: "Question not found" });
+
+      const { userId } = req.query;
+      res.json({
+        questionId:   req.params.id,
+        likeCount:    question.likes.length,
+        dislikeCount: question.dislikes.length,
+        userLiked:    userId ? question.likes.includes(userId) : null,
+        userDisliked: userId ? question.dislikes.includes(userId) : null,
+      });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
