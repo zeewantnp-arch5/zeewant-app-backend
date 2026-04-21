@@ -1,6 +1,7 @@
 import express from "express";
 import multer from "multer";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
 import Soulpana from "../models/Soulpana.js";
@@ -11,10 +12,14 @@ import { syncEngagementToRTDB } from "../config/firebase.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// ── Ensure upload directory exists (Render's filesystem is ephemeral) ─────────
+const UPLOAD_DIR = path.join(__dirname, "../uploads/soulpana");
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
 // ── File storage (only used when files are actually attached) ────────────────
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
-    cb(null, path.join(__dirname, "../uploads/soulpana"));
+    cb(null, UPLOAD_DIR);
   },
   filename: (_req, file, cb) => {
     const unique = `${Date.now()}-${Math.round(Math.random() * 1e6)}`;
@@ -26,19 +31,35 @@ const upload = multer({
   storage,
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    const ok = /jpeg|jpg|png|gif|webp|pdf|doc|docx/.test(
+    const ok = /jpeg|jpg|png|gif|webp|heic|heif|pdf|doc|docx/.test(
       path.extname(file.originalname).toLowerCase()
     );
-    cb(ok ? null : new Error("File type not allowed"), ok);
+    cb(ok ? null : new Error(`File type not allowed. Accepted: JPEG, PNG, GIF, WEBP, HEIC, PDF, DOC, DOCX`), ok);
   },
 });
 
 // ── Conditionally apply multer only when request is multipart ────────────────
+// Wraps Multer so errors (bad file type, size exceeded, disk failure) are
+// returned as clean JSON 400 responses instead of falling through to
+// Express's default HTML 500 error page.
 function maybeMultipart(req, res, next) {
-  if (req.is("multipart/form-data")) {
-    return upload.array("attachments", 5)(req, res, next);
+  if (!req.is("multipart/form-data")) {
+    return next(); // JSON body — express.json() already parsed it
   }
-  next(); // JSON or url-encoded — express.json() already parsed req.body
+
+  upload.array("attachments", 5)(req, res, (err) => {
+    if (!err) return next();
+
+    // Multer-specific errors (file type, size limit)
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res.status(400).json({ message: "File too large. Maximum size is 10 MB per file." });
+    }
+    if (err.code === "LIMIT_FILE_COUNT") {
+      return res.status(400).json({ message: "Too many files. Maximum is 5 attachments." });
+    }
+    // fileFilter rejection or any other Multer/disk error
+    return res.status(400).json({ message: err.message || "File upload failed." });
+  });
 }
 
 // ── Factory — receives io so routes can emit real-time events ─────────────
