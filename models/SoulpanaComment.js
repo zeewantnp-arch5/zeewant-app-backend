@@ -15,7 +15,15 @@ const soulpanaCommentSchema = new mongoose.Schema(
       required: true,
       enum: ["student", "soultee"],
     },
+    parentCommentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "SoulpanaComment",
+      default: null,
+      index: true,
+    },
     text: { type: String, required: true, trim: true },
+    likes: { type: [String], default: [] },
+    dislikes: { type: [String], default: [] },
   },
   { timestamps: true }
 );

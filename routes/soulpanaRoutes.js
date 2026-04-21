@@ -8,7 +8,7 @@ import Soulpana from "../models/Soulpana.js";
 import SoulpanaComment from "../models/SoulpanaComment.js";
 import Soultee from "../models/Soultee.js";
 import { emitToUser } from "../services/notificationService.js";
-import { syncEngagementToRTDB } from "../config/firebase.js";
+import { syncCommentInteractionToRTDB, syncCommentToRTDB, syncEngagementToRTDB } from "../config/firebase.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -218,7 +218,7 @@ export default function createSoulpanaRoutes(io) {
   // ── POST /api/soulpana/:questionId/comments  ──  post a comment ─────────────
   router.post("/:questionId/comments", async (req, res) => {
     try {
-      const { authorId, authorName, authorRole, text } = req.body;
+      const { authorId, authorName, authorRole, text, parentCommentId } = req.body;
       const { questionId } = req.params;
 
       if (!authorId || !authorName || !authorRole || !text?.trim()) {
@@ -234,6 +234,7 @@ export default function createSoulpanaRoutes(io) {
         authorId,
         authorName,
         authorRole,
+        parentCommentId: parentCommentId || null,
         text: text.trim(),
       });
 
@@ -252,24 +253,172 @@ export default function createSoulpanaRoutes(io) {
 
       // Emit to the question's socket room so both parties get it live
       io.to(`question:${questionId}`).emit("new_comment", commentData);
+      io.to(`question:${questionId}`).emit("comment_interaction_updated", {
+        questionId,
+        commentId: commentData._id,
+        parentCommentId: commentData.parentCommentId,
+        type: parentCommentId ? "reply" : "comment",
+      });
 
-      // Also notify the other party via their personal room
+      syncCommentInteractionToRTDB(questionId, String(commentData._id), {
+        type: parentCommentId ? "reply" : "comment",
+        parentCommentId: commentData.parentCommentId,
+      });
+      // Signal RTDB so Flutter listeners wake up without polling
+      syncCommentToRTDB(questionId, String(commentData._id), {
+        authorRole: authorRole,
+        isReply:    !!parentCommentId,
+      });
+
+      // ── Broadcast list-level activity so both sides can show unread badges ──
+      // Any socket on either side watching the question list receives this event.
+      const activityPayload = {
+        questionId,
+        authorRole,
+        authorName,
+        preview: text.trim().slice(0, 80),
+        isReply: !!parentCommentId,
+        commentId: String(commentData._id),
+      };
+      io.emit("question_activity", activityPayload);
+
+      // ── Personal-room notifications so users NOT in the thread also get it ─
       if (authorRole === "soultee") {
+        // Soultee replied → notify the question owner (student)
         emitToUser(io, "student", question.userId, "new_comment", commentData);
+        emitToUser(io, "student", question.userId, "question_activity", activityPayload);
       } else {
-        // notify all soultees who have commented on this question
+        // Student commented → notify assigned soultee (if any) + soultees who replied before
+        const notifyUids = new Set();
+        if (question.assignedSoulteeUid) notifyUids.add(question.assignedSoulteeUid);
         const soulteeCommenters = await SoulpanaComment.distinct("authorId", {
           questionId,
           authorRole: "soultee",
         });
-        soulteeCommenters.forEach((uid) =>
-          emitToUser(io, "soultee", uid, "new_comment", commentData)
-        );
+        soulteeCommenters.forEach((uid) => notifyUids.add(uid));
+        notifyUids.forEach((uid) => {
+          emitToUser(io, "soultee", uid, "new_comment", commentData);
+          emitToUser(io, "soultee", uid, "question_activity", activityPayload);
+        });
       }
 
       res.status(201).json(commentData);
     } catch (err) {
       console.error("Comment post error:", err);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ── POST /api/soulpana/:questionId/comments/:commentId/like ──────────────
+  router.post("/:questionId/comments/:commentId/like", async (req, res) => {
+    try {
+      const { userId } = req.body;
+      const { questionId, commentId } = req.params;
+      if (!userId) return res.status(400).json({ message: "userId is required" });
+
+      const comment = await SoulpanaComment.findOne({ _id: commentId, questionId })
+        .select("likes dislikes")
+        .lean();
+      if (!comment) return res.status(404).json({ message: "Comment not found" });
+
+      const alreadyLiked = (comment.likes || []).includes(userId);
+      if (alreadyLiked) {
+        await SoulpanaComment.findByIdAndUpdate(commentId, { $pull: { likes: userId } });
+      } else {
+        await SoulpanaComment.findByIdAndUpdate(commentId, {
+          $addToSet: { likes: userId },
+          $pull: { dislikes: userId },
+        });
+      }
+
+      const updated = await SoulpanaComment.findById(commentId)
+        .select("likes dislikes parentCommentId")
+        .lean();
+
+      const payload = {
+        questionId,
+        commentId,
+        actorId: userId,
+        parentCommentId: updated.parentCommentId,
+        likeCount: (updated.likes || []).length,
+        dislikeCount: (updated.dislikes || []).length,
+        userLiked: (updated.likes || []).includes(userId),
+        userDisliked: (updated.dislikes || []).includes(userId),
+      };
+
+      io.to(`question:${questionId}`).emit("comment_liked", payload);
+      io.to(`question:${questionId}`).emit("comment_interaction_updated", {
+        questionId,
+        commentId,
+        type: "like",
+      });
+
+      syncCommentInteractionToRTDB(questionId, commentId, {
+        type: "like",
+        likeCount: payload.likeCount,
+        dislikeCount: payload.dislikeCount,
+      });
+
+      res.json(payload);
+    } catch (err) {
+      console.error("Comment like toggle error:", err);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ── POST /api/soulpana/:questionId/comments/:commentId/dislike ───────────
+  router.post("/:questionId/comments/:commentId/dislike", async (req, res) => {
+    try {
+      const { userId } = req.body;
+      const { questionId, commentId } = req.params;
+      if (!userId) return res.status(400).json({ message: "userId is required" });
+
+      const comment = await SoulpanaComment.findOne({ _id: commentId, questionId })
+        .select("likes dislikes")
+        .lean();
+      if (!comment) return res.status(404).json({ message: "Comment not found" });
+
+      const alreadyDisliked = (comment.dislikes || []).includes(userId);
+      if (alreadyDisliked) {
+        await SoulpanaComment.findByIdAndUpdate(commentId, { $pull: { dislikes: userId } });
+      } else {
+        await SoulpanaComment.findByIdAndUpdate(commentId, {
+          $addToSet: { dislikes: userId },
+          $pull: { likes: userId },
+        });
+      }
+
+      const updated = await SoulpanaComment.findById(commentId)
+        .select("likes dislikes parentCommentId")
+        .lean();
+
+      const payload = {
+        questionId,
+        commentId,
+        actorId: userId,
+        parentCommentId: updated.parentCommentId,
+        likeCount: (updated.likes || []).length,
+        dislikeCount: (updated.dislikes || []).length,
+        userLiked: (updated.likes || []).includes(userId),
+        userDisliked: (updated.dislikes || []).includes(userId),
+      };
+
+      io.to(`question:${questionId}`).emit("comment_disliked", payload);
+      io.to(`question:${questionId}`).emit("comment_interaction_updated", {
+        questionId,
+        commentId,
+        type: "dislike",
+      });
+
+      syncCommentInteractionToRTDB(questionId, commentId, {
+        type: "dislike",
+        likeCount: payload.likeCount,
+        dislikeCount: payload.dislikeCount,
+      });
+
+      res.json(payload);
+    } catch (err) {
+      console.error("Comment dislike toggle error:", err);
       res.status(500).json({ message: err.message });
     }
   });

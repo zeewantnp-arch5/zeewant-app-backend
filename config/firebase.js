@@ -181,6 +181,44 @@ export async function syncEngagementToRTDB(questionId, likeCount, dislikeCount) 
   }
 }
 
+// ─── Comment posted sync ─────────────────────────────────────────────────────
+/**
+ * Write a lightweight record to RTDB at /comments/{questionId}/lastActivity
+ * so Flutter listeners know a new comment arrived without polling MongoDB.
+ */
+export async function syncCommentToRTDB(questionId, commentId, meta) {
+  const db = getDB();
+  if (!db) return;
+  try {
+    await db.ref(`comments/${questionId}/lastActivity`).set({
+      commentId,
+      authorRole: meta.authorRole ?? "unknown",
+      isReply:    meta.isReply ?? false,
+      ts:         Date.now(),
+    });
+  } catch (err) {
+    console.error("RTDB syncComment error:", err.message);
+  }
+}
+
+// ─── Comment interaction sync ───────────────────────────────────────────────
+/**
+ * Sync a single comment interaction payload to RTDB at
+ * /commentInteractions/{questionId}/{commentId}
+ */
+export async function syncCommentInteractionToRTDB(questionId, commentId, payload) {
+  const db = getDB();
+  if (!db) return;
+  try {
+    await db.ref(`commentInteractions/${questionId}/${commentId}`).update({
+      ...payload,
+      updatedAt: Date.now(),
+    });
+  } catch (err) {
+    console.error("RTDB syncCommentInteraction error:", err.message);
+  }
+}
+
 // ─── FCM push notification ────────────────────────────────────────────────────
 /**
  * Send a Firebase Cloud Messaging push notification.
