@@ -129,13 +129,17 @@ export default function createSoulpanaRoutes(io) {
       res.status(201).json(entry);
 
       const payload = {
-        questionId: entry._id,
-        title: entry.title,
-        category: entry.category,
-        emotionTag: entry.emotionTag,
-        anonymous: entry.anonymous,
+        questionId:         entry._id,
+        _id:                entry._id,
+        title:              entry.title,
+        category:           entry.category,
+        emotionTag:         entry.emotionTag,
+        anonymous:          entry.anonymous,
+        description:        entry.description,
         assignedSoulteeUid: entry.assignedSoulteeUid,
-        createdAt: entry.createdAt,
+        mediaUrls:          entry.mediaUrls,
+        createdAt:          entry.createdAt,
+        status:             'pending',
       };
 
       if (entry.assignedSoulteeUid) {
