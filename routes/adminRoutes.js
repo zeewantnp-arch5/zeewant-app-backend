@@ -1264,6 +1264,33 @@ router.patch(
   }
 );
 
+// DELETE /api/admin/soulpana/:id
+router.delete(
+  "/soulpana/:id",
+  requireAdmin,
+  requireRole("superAdmin", "supportAdmin"),
+  async (req, res) => {
+    try {
+      const q = await Soulpana.findByIdAndDelete(req.params.id);
+      if (!q) return res.status(404).json({ message: "Question not found" });
+
+      // Also remove related comments
+      const SoulpanaComment = (await import("../models/SoulpanaComment.js")).default;
+      await SoulpanaComment.deleteMany({ questionId: req.params.id });
+
+      await writeAuditLog(req, {
+        action: "soulpana_deleted", resourceType: "soulpana", resourceId: req.params.id,
+        resourceName: q.title,
+        description: `Soulpana question "${q.title}" permanently deleted by admin`,
+        severity: "warn",
+      });
+      res.json({ message: "Deleted" });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
 // ════════════════════════════════════════════════════════════════════════════
 //  VIDEO ACCESS — Secure signed URL for SOULTEE intro videos
 // ════════════════════════════════════════════════════════════════════════════
