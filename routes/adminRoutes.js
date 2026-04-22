@@ -1748,7 +1748,7 @@ router.get("/posts/stats", requireAdmin, async (req, res) => {
 router.patch(
   "/posts/:id/approve",
   requireAdmin,
-  requireRole("superAdmin", "supportAdmin"),
+  requireRole("superAdmin", "supportAdmin", "marketingAdmin"),
   async (req, res) => {
     try {
       const post = await Post.findByIdAndUpdate(
@@ -1818,9 +1818,10 @@ router.patch(
 router.patch(
   "/posts/:id/reject",
   requireAdmin,
-  requireRole("superAdmin", "supportAdmin"),
+  requireRole("superAdmin", "supportAdmin", "marketingAdmin"),
   async (req, res) => {
-    const { comment = "" } = req.body;
+    const { comment = "", adminComment } = req.body;
+    const finalComment = comment || adminComment || "";
 
     try {
       const post = await Post.findByIdAndUpdate(
@@ -1829,7 +1830,7 @@ router.patch(
           status:       "rejected",
           rejectedBy:   req.admin.id,
           rejectedAt:   new Date(),
-          adminComment: comment,
+          adminComment: finalComment,
         },
         { new: true }
       );
