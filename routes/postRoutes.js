@@ -298,17 +298,17 @@ export default function createPostRoutes(io) {
 
 // ─── Shared helper: notify a user their post was approved/rejected ────────────
 // (called from adminRoutes.js)
-export async function notifyPostAuthor(io, { recipientUid, type, title, body, data = {} }) {
+export async function notifyPostAuthor(io, { recipientUid, recipientRole = "student", type, title, body, data = {} }) {
   const notification = await Notification.create({
     recipientUid,
-    recipientRole: "student",
+    recipientRole,
     type,
     title,
     body,
     data,
   });
 
-  io.to(`student:${recipientUid}`).emit("new_notification", {
+  io.to(`${recipientRole}:${recipientUid}`).emit("new_notification", {
     _id:       notification._id,
     type,
     title,

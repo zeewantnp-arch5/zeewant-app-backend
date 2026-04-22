@@ -1791,11 +1791,12 @@ router.patch(
 
         // Notify the post author
         await notifyPostAuthor(io, {
-          recipientUid: post.userId,
-          type:         "post_approved",
-          title:        "Your Post is Live! 🎉",
-          body:         `Your post "${post.title}" has been approved and is now visible to students.`,
-          data:         { type: "post_approved", postId: String(post._id) },
+          recipientUid:  post.userId,
+          recipientRole: post.userRole || "student",
+          type:          "post_approved",
+          title:         "Your Post is Live! 🎉",
+          body:          `Your post "${post.title}" has been approved and is now visible to students.`,
+          data:          { type: "post_approved", postId: String(post._id) },
         });
       }
 
@@ -1842,10 +1843,11 @@ router.patch(
       const io = req.app.get("io");
       if (io) {
         await notifyPostAuthor(io, {
-          recipientUid: post.userId,
-          type:         "post_rejected",
-          title:        "Post Not Published",
-          body:         comment
+          recipientUid:  post.userId,
+          recipientRole: post.userRole || "student",
+          type:          "post_rejected",
+          title:         "Post Not Published",
+          body:          comment
             ? `Your post "${post.title}" was not approved: ${comment}`
             : `Your post "${post.title}" was not approved at this time.`,
           data: { type: "post_rejected", postId: String(post._id), comment },
