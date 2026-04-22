@@ -48,4 +48,10 @@ soulpanaSchema.virtual("dislikeCount").get(function () {
 soulpanaSchema.set("toJSON",   { virtuals: true });
 soulpanaSchema.set("toObject", { virtuals: true });
 
+// Compound indexes for the soultee feed query:
+//   filter by status + assignedSoulteeUid, sort by createdAt desc
+soulpanaSchema.index({ status: 1, createdAt: -1 });
+soulpanaSchema.index({ status: 1, assignedSoulteeUid: 1, createdAt: -1 });
+soulpanaSchema.index({ userId: 1, createdAt: -1 });
+
 export default mongoose.model("Soulpana", soulpanaSchema);

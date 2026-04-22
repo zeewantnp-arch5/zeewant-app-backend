@@ -167,9 +167,15 @@ export default function createSoulpanaRoutes(io) {
   // ── GET /api/soulpana/pending/all  ──  soultee queue ────────────────────────
   router.get("/pending/all", async (req, res) => {
     try {
-      const { soulteeUid, emotionTag, page = 1, limit = 20 } = req.query;
-      const filter = { status: "pending" };
-      // Filter to only questions assigned to this soultee (or unassigned ones)
+      const { soulteeUid, emotionTag, page = 1, limit = 15 } = req.query;
+      const pageNum  = Math.max(1, Number(page));
+      const limitNum = Math.min(50, Math.max(1, Number(limit))); // cap at 50
+
+      // Include both pending and answered so soultees can see their full history.
+      // Closed questions are excluded (archived/removed from view).
+      const filter = { status: { $in: ["pending", "answered"] } };
+
+      // Soultee sees questions assigned directly to them OR unassigned ones
       if (soulteeUid) {
         filter.$or = [
           { assignedSoulteeUid: soulteeUid },
@@ -178,12 +184,32 @@ export default function createSoulpanaRoutes(io) {
       }
       if (emotionTag) filter.emotionTag = emotionTag;
 
-      const skip = (Number(page) - 1) * Number(limit);
+      const skip = (pageNum - 1) * limitNum;
+
+      // Use lean() for performance; virtuals don't run with lean() so we
+      // compute likeCount / dislikeCount from the array lengths manually.
       const [questions, total] = await Promise.all([
-        Soulpana.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
+        Soulpana.find(filter)
+          .sort({ createdAt: -1 })   // newest first — permanent, index-backed
+          .skip(skip)
+          .limit(limitNum)
+          .lean(),
         Soulpana.countDocuments(filter),
       ]);
-      res.json({ questions, total, page: Number(page), limit: Number(limit) });
+
+      const enriched = questions.map((q) => ({
+        ...q,
+        likeCount:    (q.likes    ?? []).length,
+        dislikeCount: (q.dislikes ?? []).length,
+      }));
+
+      res.json({
+        questions: enriched,
+        total,
+        page:    pageNum,
+        limit:   limitNum,
+        hasMore: pageNum * limitNum < total,
+      });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
