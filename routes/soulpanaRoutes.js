@@ -449,6 +449,21 @@ export default function createSoulpanaRoutes(io) {
     }
   });
 
+  // ── GET /api/soulpana/detail/:id  ──  fetch a single question by MongoDB _id ──
+  router.get("/detail/:id", async (req, res) => {
+    try {
+      const question = await Soulpana.findById(req.params.id).lean();
+      if (!question) return res.status(404).json({ message: "Not found" });
+      res.json({
+        ...question,
+        likeCount:    (question.likes    ?? []).length,
+        dislikeCount: (question.dislikes ?? []).length,
+      });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // ── GET /api/soulpana/:userId  ──  student: their own questions ──────────────
   // NOTE: keep this AFTER the more-specific routes above
   router.get("/:userId", async (req, res) => {
