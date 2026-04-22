@@ -219,6 +219,53 @@ export async function syncCommentInteractionToRTDB(questionId, commentId, payloa
   }
 }
 
+// ─── Post RTDB sync ───────────────────────────────────────────────────────────
+/**
+ * Push an approved post's metadata to RTDB at /explore/posts/{postId}
+ * Flutter clients listen here for real-time explore feed updates.
+ */
+export async function syncPostToRTDB(postId, postMeta) {
+  const db = getDB();
+  if (!db) return;
+  try {
+    await db.ref(`explore/posts/${postId}`).set({
+      ...postMeta,
+      updatedAt: Date.now(),
+    });
+  } catch (err) {
+    console.error("RTDB syncPost error:", err.message);
+  }
+}
+
+/**
+ * Remove a post from the RTDB explore feed (rejected or deleted).
+ */
+export async function removePostFromRTDB(postId) {
+  const db = getDB();
+  if (!db) return;
+  try {
+    await db.ref(`explore/posts/${postId}`).remove();
+  } catch (err) {
+    console.error("RTDB removePost error:", err.message);
+  }
+}
+
+/**
+ * Sync a post's like count to RTDB at /explore/engagement/{postId}
+ */
+export async function syncPostEngagementToRTDB(postId, likeCount) {
+  const db = getDB();
+  if (!db) return;
+  try {
+    await db.ref(`explore/engagement/${postId}`).set({
+      likeCount,
+      updatedAt: Date.now(),
+    });
+  } catch (err) {
+    console.error("RTDB syncPostEngagement error:", err.message);
+  }
+}
+
 // ─── FCM push notification ────────────────────────────────────────────────────
 /**
  * Send a Firebase Cloud Messaging push notification.

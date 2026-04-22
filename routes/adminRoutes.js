@@ -12,8 +12,15 @@ import AuditLog from "../models/AuditLog.js";
 import SystemSettings from "../models/SystemSettings.js";
 import FCMToken from "../models/FCMToken.js";
 import Notification from "../models/Notification.js";
-import admin, { syncNotificationToRTDB, sendPushNotification } from "../config/firebase.js";
+import Post from "../models/Post.js";
+import admin, {
+  syncNotificationToRTDB,
+  sendPushNotification,
+  syncPostToRTDB,
+  removePostFromRTDB,
+} from "../config/firebase.js";
 import { sendResetCodeEmail } from "../services/emailService.js";
+import { notifyPostAuthor } from "./postRoutes.js";
 
 // Multer: store in memory so we can stream to Firebase Storage
 const upload = multer({
@@ -1651,6 +1658,219 @@ router.delete(
       await SoulteeApplication.findByIdAndDelete(req.params.id);
 
       res.json({ message: "Application deleted" });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
+// ════════════════════════════════════════════════════════════════════════════
+//  POST MANAGEMENT — admin approve / reject user posts
+// ════════════════════════════════════════════════════════════════════════════
+
+// GET /api/admin/posts?status=pending&category=&page=&limit=
+router.get("/posts", requireAdmin, async (req, res) => {
+  try {
+    const page   = Math.max(1, parseInt(req.query.page)  || 1);
+    const limit  = Math.min(100, parseInt(req.query.limit) || 20);
+    const skip   = (page - 1) * limit;
+
+    const filter = {};
+    if (req.query.status   && req.query.status   !== "all") filter.status   = req.query.status;
+    if (req.query.category && req.query.category !== "all") filter.category = req.query.category;
+    if (req.query.userId)  filter.userId  = req.query.userId;
+    if (req.query.search) {
+      filter.$or = [
+        { title:       { $regex: req.query.search, $options: "i" } },
+        { description: { $regex: req.query.search, $options: "i" } },
+        { userName:    { $regex: req.query.search, $options: "i" } },
+      ];
+    }
+
+    const [posts, total] = await Promise.all([
+      Post.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Post.countDocuments(filter),
+    ]);
+
+    res.json({
+      posts: posts.map(p => ({ ...p, likeCount: (p.likes || []).length })),
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// GET /api/admin/posts/stats
+router.get("/posts/stats", requireAdmin, async (req, res) => {
+  try {
+    const [pending, approved, rejected] = await Promise.all([
+      Post.countDocuments({ status: "pending" }),
+      Post.countDocuments({ status: "approved" }),
+      Post.countDocuments({ status: "rejected" }),
+    ]);
+    res.json({ pending, approved, rejected, total: pending + approved + rejected });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// PATCH /api/admin/posts/:id/approve
+router.patch(
+  "/posts/:id/approve",
+  requireAdmin,
+  requireRole("superAdmin", "supportAdmin"),
+  async (req, res) => {
+    try {
+      const post = await Post.findByIdAndUpdate(
+        req.params.id,
+        {
+          status:      "approved",
+          approvedBy:  req.admin.id,
+          approvedAt:  new Date(),
+          adminComment: "",
+        },
+        { new: true }
+      );
+      if (!post) return res.status(404).json({ message: "Post not found" });
+
+      // Push to Firebase RTDB explore feed so Flutter clients update in real-time
+      syncPostToRTDB(String(post._id), {
+        title:     post.title,
+        category:  post.category,
+        userId:    post.userId,
+        userName:  post.userName,
+        userRole:  post.userRole,
+        mediaType: post.mediaType,
+        mediaUrl:  post.mediaUrl,
+        likeCount: post.likes.length,
+        views:     post.views,
+        createdAt: post.createdAt.getTime(),
+        approvedAt: post.approvedAt.getTime(),
+      }).catch(() => {});
+
+      // Emit socket event so explore feed updates in real-time
+      const io = req.app.get("io");
+      if (io) {
+        io.emit("post_approved", {
+          postId:   String(post._id),
+          title:    post.title,
+          category: post.category,
+          userId:   post.userId,
+          userName: post.userName,
+        });
+
+        // Notify the post author
+        await notifyPostAuthor(io, {
+          recipientUid: post.userId,
+          type:         "post_approved",
+          title:        "Your Post is Live! 🎉",
+          body:         `Your post "${post.title}" has been approved and is now visible to students.`,
+          data:         { type: "post_approved", postId: String(post._id) },
+        });
+      }
+
+      await writeAuditLog(req, {
+        action:       "post_approved",
+        resourceType: "post",
+        resourceId:   String(post._id),
+        resourceName: post.title,
+        description:  `Post "${post.title}" by ${post.userName} approved`,
+      });
+
+      res.json({ message: "Post approved and published to explore feed", status: "approved" });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
+// PATCH /api/admin/posts/:id/reject
+router.patch(
+  "/posts/:id/reject",
+  requireAdmin,
+  requireRole("superAdmin", "supportAdmin"),
+  async (req, res) => {
+    const { comment = "" } = req.body;
+
+    try {
+      const post = await Post.findByIdAndUpdate(
+        req.params.id,
+        {
+          status:       "rejected",
+          rejectedBy:   req.admin.id,
+          rejectedAt:   new Date(),
+          adminComment: comment,
+        },
+        { new: true }
+      );
+      if (!post) return res.status(404).json({ message: "Post not found" });
+
+      // Remove from RTDB explore feed if it was previously approved
+      removePostFromRTDB(String(post._id)).catch(() => {});
+
+      const io = req.app.get("io");
+      if (io) {
+        await notifyPostAuthor(io, {
+          recipientUid: post.userId,
+          type:         "post_rejected",
+          title:        "Post Not Published",
+          body:         comment
+            ? `Your post "${post.title}" was not approved: ${comment}`
+            : `Your post "${post.title}" was not approved at this time.`,
+          data: { type: "post_rejected", postId: String(post._id), comment },
+        });
+      }
+
+      await writeAuditLog(req, {
+        action:       "post_rejected",
+        resourceType: "post",
+        resourceId:   String(post._id),
+        resourceName: post.title,
+        description:  `Post "${post.title}" by ${post.userName} rejected. Reason: ${comment || "none"}`,
+        severity:     "warn",
+        metadata:     { comment },
+      });
+
+      res.json({ message: "Post rejected", status: "rejected" });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
+// DELETE /api/admin/posts/:id
+router.delete(
+  "/posts/:id",
+  requireAdmin,
+  requireRole("superAdmin"),
+  async (req, res) => {
+    try {
+      const post = await Post.findById(req.params.id);
+      if (!post) return res.status(404).json({ message: "Post not found" });
+
+      // Delete media from Firebase Storage
+      if (post.mediaPath && admin.apps.length) {
+        try {
+          await admin.storage().bucket().file(post.mediaPath).delete();
+        } catch (_) { /* non-fatal */ }
+      }
+
+      removePostFromRTDB(String(post._id)).catch(() => {});
+      await Post.findByIdAndDelete(req.params.id);
+
+      await writeAuditLog(req, {
+        action:       "post_deleted",
+        resourceType: "post",
+        resourceId:   String(post._id),
+        resourceName: post.title,
+        description:  `Post "${post.title}" by ${post.userName} deleted by admin`,
+        severity:     "warn",
+      });
+
+      res.json({ message: "Post deleted" });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }

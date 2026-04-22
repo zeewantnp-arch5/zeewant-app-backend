@@ -26,6 +26,7 @@ import { registerSecurityNamespace } from "./sockets/securityNamespace.js";
 import marketingRoutes from "./routes/marketingRoutes.js";
 import { registerMarketingNamespace } from "./sockets/marketingNamespace.js";
 import supportRoutes from "./routes/supportRoutes.js";
+import createPostRoutes from "./routes/postRoutes.js";
 import { registerSupportNamespace } from "./sockets/supportNamespace.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -67,6 +68,7 @@ app.use("/api/analytics",             analyticsRoutes);
 app.use("/api/security",              securityRoutes);
 app.use("/api/marketing",             marketingRoutes);
 app.use("/api/support",               supportRoutes);
+app.use("/api/posts",                 createPostRoutes(io));
 app.use(express.static(join(__dirname, "public")));
 app.use("/uploads", express.static(join(__dirname, "uploads")));
 
