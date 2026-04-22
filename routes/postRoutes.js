@@ -41,10 +41,12 @@ async function uploadMediaToFirebase(file, userId) {
     metadata: { contentType: file.mimetype },
   });
 
-  const [mediaUrl] = await fileRef.getSignedUrl({
-    action:  "read",
-    expires: Date.now() + 10 * 365 * 24 * 60 * 60 * 1000, // 10 years
-  });
+  // Make file publicly readable — no expiry, works in Flutter Web (no CORS issue)
+  await fileRef.makePublic();
+
+  const bucketName = bucket.name;
+  const encodedPath = encodeURIComponent(mediaPath);
+  const mediaUrl = `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodedPath}?alt=media`;
 
   return { mediaUrl, mediaPath };
 }
@@ -89,14 +91,15 @@ export default function createPostRoutes(io) {
       let mediaPath = null;
 
       if (req.file) {
-        if (ALLOWED_IMAGE_TYPES.includes(req.file.mimetype)) {
-          mediaType = "image";
-        } else {
-          mediaType = "video";
-        }
+        // Multipart upload — backend handles Firebase upload
+        mediaType = ALLOWED_IMAGE_TYPES.includes(req.file.mimetype) ? "image" : "video";
         const uploaded = await uploadMediaToFirebase(req.file, userId);
         mediaUrl  = uploaded.mediaUrl;
         mediaPath = uploaded.mediaPath;
+      } else if (req.body.mediaUrl) {
+        // Client-side Firebase upload — URL already set, just store it
+        mediaUrl  = req.body.mediaUrl;
+        mediaType = req.body.mediaType || "image";
       }
 
       const post = await Post.create({
