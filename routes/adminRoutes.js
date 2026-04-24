@@ -1778,7 +1778,10 @@ router.patch(
         approvedAt: post.approvedAt.getTime(),
       }).catch(() => {});
 
-      // Emit socket event so explore feed updates in real-time
+      // Respond immediately — don't block on FCM / audit log
+      res.json({ message: "Post approved and published to explore feed", status: "approved" });
+
+      // Fire-and-forget: socket, notification, audit (non-blocking so Render doesn't timeout)
       const io = req.app.get("io");
       if (io) {
         io.emit("post_approved", {
@@ -1788,27 +1791,22 @@ router.patch(
           userId:   post.userId,
           userName: post.userName,
         });
-
-        // Notify the post author
-        await notifyPostAuthor(io, {
+        notifyPostAuthor(io, {
           recipientUid:  post.userId,
           recipientRole: post.userRole || "student",
           type:          "post_approved",
           title:         "Your Post is Live! 🎉",
           body:          `Your post "${post.title}" has been approved and is now visible to students.`,
           data:          { type: "post_approved", postId: String(post._id) },
-        });
+        }).catch(() => {});
       }
-
-      await writeAuditLog(req, {
+      writeAuditLog(req, {
         action:       "post_approved",
         resourceType: "post",
         resourceId:   String(post._id),
         resourceName: post.title,
         description:  `Post "${post.title}" by ${post.userName} approved`,
-      });
-
-      res.json({ message: "Post approved and published to explore feed", status: "approved" });
+      }).catch(() => {});
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
@@ -1840,9 +1838,13 @@ router.patch(
       // Remove from RTDB explore feed if it was previously approved
       removePostFromRTDB(String(post._id)).catch(() => {});
 
+      // Respond immediately — don't block on FCM / audit log
+      res.json({ message: "Post rejected", status: "rejected" });
+
+      // Fire-and-forget: notification + audit (non-blocking)
       const io = req.app.get("io");
       if (io) {
-        await notifyPostAuthor(io, {
+        notifyPostAuthor(io, {
           recipientUid:  post.userId,
           recipientRole: post.userRole || "student",
           type:          "post_rejected",
@@ -1851,10 +1853,9 @@ router.patch(
             ? `Your post "${post.title}" was not approved: ${comment}`
             : `Your post "${post.title}" was not approved at this time.`,
           data: { type: "post_rejected", postId: String(post._id), comment },
-        });
+        }).catch(() => {});
       }
-
-      await writeAuditLog(req, {
+      writeAuditLog(req, {
         action:       "post_rejected",
         resourceType: "post",
         resourceId:   String(post._id),
@@ -1862,9 +1863,7 @@ router.patch(
         description:  `Post "${post.title}" by ${post.userName} rejected. Reason: ${comment || "none"}`,
         severity:     "warn",
         metadata:     { comment },
-      });
-
-      res.json({ message: "Post rejected", status: "rejected" });
+      }).catch(() => {});
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
@@ -1875,7 +1874,7 @@ router.patch(
 router.delete(
   "/posts/:id",
   requireAdmin,
-  requireRole("superAdmin"),
+  requireRole("superAdmin", "supportAdmin", "marketingAdmin"),
   async (req, res) => {
     try {
       const post = await Post.findById(req.params.id);
