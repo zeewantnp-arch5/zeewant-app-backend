@@ -1,6 +1,7 @@
 import express from "express";
 import multer from "multer";
 import Post, { POST_CATEGORIES } from "../models/Post.js";
+import PostComment from "../models/PostComment.js";
 import FCMToken from "../models/FCMToken.js";
 import Notification from "../models/Notification.js";
 import admin, {
@@ -11,28 +12,39 @@ import admin, {
   syncPostEngagementToRTDB,
 } from "../config/firebase.js";
 
-// ─── Multer: memory storage → stream to Firebase ────────────────────────────
+// ─── Allowed MIME types ───────────────────────────────────────────────────────
 const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp", "image/heic"];
-const ALLOWED_VIDEO_TYPES = ["video/mp4", "video/quicktime", "video/x-msvideo", "video/webm", "video/x-matroska"];
+const ALLOWED_AUDIO_TYPES = ["audio/mpeg", "audio/mp4", "audio/m4a", "audio/aac", "audio/wav",
+                              "audio/ogg", "audio/webm", "audio/x-m4a"];
+const ALLOWED_VIDEO_TYPES = ["video/mp4", "video/quicktime", "video/x-msvideo", "video/webm",
+                              "video/x-matroska", "video/3gpp"];
 
+const ALL_ALLOWED_TYPES = [...ALLOWED_IMAGE_TYPES, ...ALLOWED_AUDIO_TYPES, ...ALLOWED_VIDEO_TYPES];
+
+// ── Size limits per media type ────────────────────────────────────────────────
+const IMAGE_MAX_BYTES = 10 * 1024 * 1024; //  10 MB
+const AUDIO_MAX_BYTES =  3 * 1024 * 1024; //   3 MB
+const VIDEO_MAX_BYTES =  5 * 1024 * 1024; //   5 MB
+
+// ─── Multer: memory storage → stream to Firebase ─────────────────────────────
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB max (covers HD videos)
+  limits: { fileSize: 10 * 1024 * 1024 }, // hard cap at 10 MB; per-type checked below
   fileFilter: (_, file, cb) => {
-    if ([...ALLOWED_IMAGE_TYPES, ...ALLOWED_VIDEO_TYPES].includes(file.mimetype)) {
+    if (ALL_ALLOWED_TYPES.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error("Only images (JPEG/PNG/GIF/WebP/HEIC) and videos (MP4/MOV/AVI/WebM/MKV) are allowed"));
+      cb(new Error(`File type ${file.mimetype} is not allowed`));
     }
   },
 });
 
-// ─── Upload a buffer to Firebase Storage, return { mediaUrl, mediaPath } ─────
+// ─── Upload a single buffer to Firebase Storage ───────────────────────────────
 async function uploadMediaToFirebase(file, userId) {
   if (!admin.apps.length) throw new Error("Firebase not initialised");
 
   const bucket    = admin.storage().bucket();
-  const ext       = file.originalname.split(".").pop().toLowerCase();
+  const ext       = file.originalname.split(".").pop().toLowerCase() || "bin";
   const timestamp = Date.now();
   const mediaPath = `posts/${userId}/${timestamp}.${ext}`;
   const fileRef   = bucket.file(mediaPath);
@@ -41,12 +53,11 @@ async function uploadMediaToFirebase(file, userId) {
     metadata: { contentType: file.mimetype },
   });
 
-  // Make file publicly readable — no expiry, works in Flutter Web (no CORS issue)
   await fileRef.makePublic();
 
-  const bucketName = bucket.name;
+  const bucketName  = bucket.name;
   const encodedPath = encodeURIComponent(mediaPath);
-  const mediaUrl = `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodedPath}?alt=media`;
+  const mediaUrl    = `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodedPath}?alt=media`;
 
   return { mediaUrl, mediaPath };
 }
@@ -56,25 +67,38 @@ async function deleteMediaFromFirebase(mediaPath) {
   if (!admin.apps.length || !mediaPath) return;
   try {
     await admin.storage().bucket().file(mediaPath).delete();
-  } catch (_) {
-    // File may already be deleted — not fatal
-  }
+  } catch (_) {}
+}
+
+// ─── Classify MIME type → "image" | "audio" | "video" ────────────────────────
+function classifyMime(mimeType) {
+  if (ALLOWED_IMAGE_TYPES.includes(mimeType)) return "image";
+  if (ALLOWED_AUDIO_TYPES.includes(mimeType)) return "audio";
+  return "video";
 }
 
 // ─── Factory: receives io for real-time events ───────────────────────────────
 export default function createPostRoutes(io) {
   const router = express.Router();
 
-  // ── GET /api/posts/categories ────────────────────────────────────────────
+  // ── GET /api/posts/categories ──────────────────────────────────────────────
   router.get("/categories", (_, res) => {
     res.json({ categories: POST_CATEGORIES });
   });
 
-  // ── POST /api/posts ──────────────────────────────────────────────────────
-  // Create a new post (multipart/form-data)
-  // Fields: userId, userName, userRole, title, category, description
-  // File:   media (optional — image or video)
-  router.post("/", upload.single("media"), async (req, res) => {
+  // ── POST /api/posts ────────────────────────────────────────────────────────
+  // Accepts multipart OR JSON.
+  //
+  // Multipart fields:
+  //   userId, userName, userRole, title, category, description
+  //   media[]          — up to 5 files (image / audio / video)
+  //
+  // JSON body (pre-uploaded from client):
+  //   ...same scalar fields...
+  //   mediaUrl         — single pre-uploaded URL (legacy)
+  //   mediaType        — "image" | "audio" | "video"
+  //   mediaItems       — JSON string: [{type, url, size}] (new, multi-media)
+  router.post("/", upload.array("media", 5), async (req, res) => {
     try {
       const { userId, userName, userRole, title, category, description } = req.body;
 
@@ -86,21 +110,72 @@ export default function createPostRoutes(io) {
         return res.status(400).json({ message: "Invalid category", validCategories: POST_CATEGORIES });
       }
 
-      let mediaType = "none";
-      let mediaUrl  = null;
-      let mediaPath = null;
+      const mediaItems = [];
 
-      if (req.file) {
-        // Multipart upload — backend handles Firebase upload
-        mediaType = ALLOWED_IMAGE_TYPES.includes(req.file.mimetype) ? "image" : "video";
-        const uploaded = await uploadMediaToFirebase(req.file, userId);
-        mediaUrl  = uploaded.mediaUrl;
-        mediaPath = uploaded.mediaPath;
-      } else if (req.body.mediaUrl) {
-        // Client-side Firebase upload — URL already set, just store it
-        mediaUrl  = req.body.mediaUrl;
-        mediaType = req.body.mediaType || "image";
+      // ── 1. Handle pre-uploaded mediaItems array (from Flutter direct upload) ─
+      if (req.body.mediaItems) {
+        let parsed;
+        try {
+          parsed = typeof req.body.mediaItems === "string"
+            ? JSON.parse(req.body.mediaItems)
+            : req.body.mediaItems;
+        } catch {
+          return res.status(400).json({ message: "Invalid mediaItems JSON" });
+        }
+        if (Array.isArray(parsed)) {
+          for (const item of parsed) {
+            if (item.url && ["image", "audio", "video"].includes(item.type)) {
+              mediaItems.push({
+                type:     item.type,
+                url:      item.url,
+                path:     item.path || null,
+                size:     item.size || 0,
+                mimeType: item.mimeType || "",
+              });
+            }
+          }
+        }
       }
+
+      // ── 2. Handle legacy single pre-uploaded URL ──────────────────────────
+      if (req.body.mediaUrl && mediaItems.length === 0) {
+        const mType = req.body.mediaType || "image";
+        if (["image", "audio", "video"].includes(mType)) {
+          mediaItems.push({ type: mType, url: req.body.mediaUrl });
+        }
+      }
+
+      // ── 3. Handle multipart file uploads → Firebase Storage ───────────────
+      if (req.files && req.files.length > 0) {
+        for (const file of req.files) {
+          const mType = classifyMime(file.mimetype);
+          const maxBytes = mType === "image" ? IMAGE_MAX_BYTES
+                         : mType === "audio" ? AUDIO_MAX_BYTES
+                         : VIDEO_MAX_BYTES;
+
+          if (file.size > maxBytes) {
+            const label = mType.charAt(0).toUpperCase() + mType.slice(1);
+            return res.status(400).json({
+              message: `${label} file too large. Maximum allowed: ${maxBytes / 1024 / 1024} MB`,
+            });
+          }
+
+          const { mediaUrl, mediaPath } = await uploadMediaToFirebase(file, userId);
+          mediaItems.push({
+            type:     mType,
+            url:      mediaUrl,
+            path:     mediaPath,
+            size:     file.size,
+            mimeType: file.mimetype,
+          });
+        }
+      }
+
+      // ── Derive backwards-compat single-media fields from first item ────────
+      const firstItem   = mediaItems[0];
+      const mediaType   = firstItem ? firstItem.type : "none";
+      const mediaUrl    = firstItem ? firstItem.url  : null;
+      const mediaPath   = firstItem ? (firstItem.path || null) : null;
 
       const post = await Post.create({
         userId,
@@ -112,27 +187,30 @@ export default function createPostRoutes(io) {
         mediaType,
         mediaUrl,
         mediaPath,
+        mediaItems,
         status: "pending",
       });
 
-      // Notify admin dashboard via socket
       io.emit("new_post_submitted", {
-        postId:   post._id,
-        title:    post.title,
-        category: post.category,
-        userId:   post.userId,
-        userName: post.userName,
+        postId:    post._id,
+        title:     post.title,
+        category:  post.category,
+        userId:    post.userId,
+        userName:  post.userName,
+        userRole:  post.userRole,
+        mediaItems: post.mediaItems,
       });
 
       res.status(201).json({
         message: "Post submitted for review. It will be visible once approved by admin.",
         post: {
-          _id:       post._id,
-          title:     post.title,
-          category:  post.category,
-          status:    post.status,
-          mediaType: post.mediaType,
-          createdAt: post.createdAt,
+          _id:        post._id,
+          title:      post.title,
+          category:   post.category,
+          status:     post.status,
+          mediaType:  post.mediaType,
+          mediaItems: post.mediaItems,
+          createdAt:  post.createdAt,
         },
       });
     } catch (err) {
@@ -140,8 +218,7 @@ export default function createPostRoutes(io) {
     }
   });
 
-  // ── GET /api/posts/explore ───────────────────────────────────────────────
-  // Approved posts for the student explore feed (paginated)
+  // ── GET /api/posts/explore ─────────────────────────────────────────────────
   router.get("/explore", async (req, res) => {
     try {
       const page     = Math.max(1, parseInt(req.query.page) || 1);
@@ -164,10 +241,10 @@ export default function createPostRoutes(io) {
         Post.countDocuments(filter),
       ]);
 
-      // Attach likeCount
       const serialized = posts.map(p => ({
         ...p,
-        likeCount: (p.likes || []).length,
+        likeCount:    (p.likes    || []).length,
+        dislikeCount: (p.dislikes || []).length,
       }));
 
       res.json({
@@ -181,8 +258,7 @@ export default function createPostRoutes(io) {
     }
   });
 
-  // ── GET /api/posts/my/:userId ────────────────────────────────────────────
-  // User's own posts (all statuses)
+  // ── GET /api/posts/my/:userId ──────────────────────────────────────────────
   router.get("/my/:userId", async (req, res) => {
     try {
       const page  = Math.max(1, parseInt(req.query.page) || 1);
@@ -203,7 +279,11 @@ export default function createPostRoutes(io) {
       ]);
 
       res.json({
-        posts: posts.map(p => ({ ...p, likeCount: (p.likes || []).length })),
+        posts: posts.map(p => ({
+          ...p,
+          likeCount:    (p.likes    || []).length,
+          dislikeCount: (p.dislikes || []).length,
+        })),
         total,
         page,
         totalPages: Math.ceil(total / limit),
@@ -213,7 +293,7 @@ export default function createPostRoutes(io) {
     }
   });
 
-  // ── GET /api/posts/:id ───────────────────────────────────────────────────
+  // ── GET /api/posts/:id ─────────────────────────────────────────────────────
   router.get("/:id", async (req, res) => {
     try {
       const post = await Post.findById(req.params.id)
@@ -221,17 +301,21 @@ export default function createPostRoutes(io) {
         .lean();
       if (!post) return res.status(404).json({ message: "Post not found" });
 
-      // Increment view count (fire-and-forget)
       Post.findByIdAndUpdate(req.params.id, { $inc: { views: 1 } }).exec();
 
-      res.json({ post: { ...post, likeCount: (post.likes || []).length } });
+      res.json({
+        post: {
+          ...post,
+          likeCount:    (post.likes    || []).length,
+          dislikeCount: (post.dislikes || []).length,
+        },
+      });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
   });
 
-  // ── POST /api/posts/:id/like ─────────────────────────────────────────────
-  // Toggle like — body: { userId }
+  // ── POST /api/posts/:id/like ───────────────────────────────────────────────
   router.post("/:id/like", async (req, res) => {
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ message: "userId is required" });
@@ -243,34 +327,150 @@ export default function createPostRoutes(io) {
         return res.status(403).json({ message: "Cannot like a post that is not approved" });
       }
 
-      const alreadyLiked = post.likes.includes(userId);
+      const alreadyLiked    = post.likes.includes(userId);
+      const alreadyDisliked = post.dislikes.includes(userId);
+
       const update = alreadyLiked
-        ? { $pull:      { likes: userId } }
-        : { $addToSet:  { likes: userId } };
+        ? { $pull: { likes: userId } }
+        : { $addToSet: { likes: userId } };
 
-      const updated = await Post.findByIdAndUpdate(req.params.id, update, { new: true });
-      const likeCount = updated.likes.length;
+      // Remove dislike when liking
+      if (!alreadyLiked && alreadyDisliked) {
+        update.$pull = { ...(update.$pull || {}), dislikes: userId };
+      }
 
-      // Sync to RTDB for real-time badge updates
+      const updated     = await Post.findByIdAndUpdate(req.params.id, update, { new: true });
+      const likeCount   = updated.likes.length;
+      const dislikeCount = updated.dislikes.length;
+
       syncPostEngagementToRTDB(req.params.id, likeCount).catch(() => {});
 
-      // Emit to explore feed listeners
       io.emit("post_engagement_updated", {
-        postId:    req.params.id,
-        likeCount,
-        liked:     !alreadyLiked,
+        postId: req.params.id, likeCount, dislikeCount,
+        liked:  !alreadyLiked,
         userId,
       });
 
-      res.json({ liked: !alreadyLiked, likeCount });
+      res.json({
+        liked:        !alreadyLiked,
+        disliked:     false,
+        likeCount,
+        dislikeCount,
+      });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
   });
 
-  // ── DELETE /api/posts/:id ────────────────────────────────────────────────
-  // Allow post creator to delete their own pending/rejected post
-  // Body: { userId }
+  // ── POST /api/posts/:id/dislike ────────────────────────────────────────────
+  router.post("/:id/dislike", async (req, res) => {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ message: "userId is required" });
+
+    try {
+      const post = await Post.findById(req.params.id);
+      if (!post) return res.status(404).json({ message: "Post not found" });
+      if (post.status !== "approved") {
+        return res.status(403).json({ message: "Cannot dislike a post that is not approved" });
+      }
+
+      const alreadyDisliked = post.dislikes.includes(userId);
+      const alreadyLiked    = post.likes.includes(userId);
+
+      const update = alreadyDisliked
+        ? { $pull: { dislikes: userId } }
+        : { $addToSet: { dislikes: userId } };
+
+      // Remove like when disliking
+      if (!alreadyDisliked && alreadyLiked) {
+        update.$pull = { ...(update.$pull || {}), likes: userId };
+      }
+
+      const updated      = await Post.findByIdAndUpdate(req.params.id, update, { new: true });
+      const likeCount    = updated.likes.length;
+      const dislikeCount = updated.dislikes.length;
+
+      io.emit("post_engagement_updated", {
+        postId: req.params.id, likeCount, dislikeCount,
+        disliked: !alreadyDisliked,
+        userId,
+      });
+
+      res.json({
+        disliked:    !alreadyDisliked,
+        liked:       false,
+        likeCount,
+        dislikeCount,
+      });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ── GET /api/posts/:id/comments ───────────────────────────────────────────
+  router.get("/:id/comments", async (req, res) => {
+    try {
+      const page  = Math.max(1, parseInt(req.query.page) || 1);
+      const limit = Math.min(50, parseInt(req.query.limit) || 20);
+      const skip  = (page - 1) * limit;
+
+      const [comments, total] = await Promise.all([
+        PostComment.find({ postId: req.params.id })
+          .sort({ createdAt: 1 })
+          .skip(skip)
+          .limit(limit)
+          .lean(),
+        PostComment.countDocuments({ postId: req.params.id }),
+      ]);
+
+      res.json({ comments, total, page });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ── POST /api/posts/:id/comments ──────────────────────────────────────────
+  router.post("/:id/comments", async (req, res) => {
+    const { userId, userName, userRole, text } = req.body;
+    if (!userId || !text?.trim()) {
+      return res.status(400).json({ message: "userId and text are required" });
+    }
+
+    try {
+      const post = await Post.findById(req.params.id).select("status").lean();
+      if (!post) return res.status(404).json({ message: "Post not found" });
+      if (post.status !== "approved") {
+        return res.status(403).json({ message: "Cannot comment on an unapproved post" });
+      }
+
+      const comment = await PostComment.create({
+        postId:     req.params.id,
+        authorId:   userId,
+        authorName: userName || "Anonymous",
+        authorRole: userRole || "student",
+        text:       text.trim(),
+      });
+
+      io.emit("post_comment_added", {
+        postId:  req.params.id,
+        comment: {
+          _id:        comment._id,
+          authorName: comment.authorName,
+          authorRole: comment.authorRole,
+          text:       comment.text,
+          likes:      [],
+          likeCount:  0,
+          createdAt:  comment.createdAt,
+        },
+      });
+
+      res.status(201).json({ comment });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ── DELETE /api/posts/:id ──────────────────────────────────────────────────
   router.delete("/:id", async (req, res) => {
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ message: "userId is required" });
@@ -280,12 +480,20 @@ export default function createPostRoutes(io) {
       if (!post) return res.status(404).json({ message: "Post not found" });
       if (post.userId !== userId) return res.status(403).json({ message: "Forbidden" });
 
-      await deleteMediaFromFirebase(post.mediaPath);
-      await Post.findByIdAndDelete(req.params.id);
+      // Delete all media items from Firebase Storage
+      for (const item of post.mediaItems || []) {
+        if (item.path) await deleteMediaFromFirebase(item.path);
+      }
+      if (post.mediaPath && !(post.mediaItems || []).some(i => i.path === post.mediaPath)) {
+        await deleteMediaFromFirebase(post.mediaPath);
+      }
 
       if (post.status === "approved") {
         removePostFromRTDB(req.params.id).catch(() => {});
       }
+
+      await PostComment.deleteMany({ postId: req.params.id });
+      await Post.findByIdAndDelete(req.params.id);
 
       res.json({ message: "Post deleted" });
     } catch (err) {
@@ -297,7 +505,6 @@ export default function createPostRoutes(io) {
 }
 
 // ─── Shared helper: notify a user their post was approved/rejected ────────────
-// (called from adminRoutes.js)
 export async function notifyPostAuthor(io, { recipientUid, recipientRole = "student", type, title, body, data = {} }) {
   const notification = await Notification.create({
     recipientUid,
