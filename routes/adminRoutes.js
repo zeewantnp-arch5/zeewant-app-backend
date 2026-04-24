@@ -18,6 +18,8 @@ import admin, {
   sendPushNotification,
   syncPostToRTDB,
   removePostFromRTDB,
+  syncBroadcastToRTDB,
+  sendTopicNotification,
 } from "../config/firebase.js";
 import { sendResetCodeEmail } from "../services/emailService.js";
 import { notifyPostAuthor } from "./postRoutes.js";
@@ -1807,6 +1809,23 @@ router.patch(
         resourceName: post.title,
         description:  `Post "${post.title}" by ${post.userName} approved`,
       }).catch(() => {});
+
+      // Broadcast to all students: RTDB signal + FCM topic push
+      syncBroadcastToRTDB(String(post._id), {
+        type:     "new_post",
+        postId:   String(post._id),
+        title:    post.title,
+        userName: post.userName,
+        userRole: post.userRole || "soultee",
+        category: post.category,
+        mediaType: post.mediaType || "none",
+      }).catch(() => {});
+      sendTopicNotification(
+        "new_posts",
+        `📢 New post by ${post.userName}`,
+        post.title,
+        { type: "new_post", postId: String(post._id), category: post.category }
+      ).catch(() => {});
     } catch (err) {
       res.status(500).json({ message: err.message });
     }

@@ -303,4 +303,45 @@ export async function sendPushNotification(token, title, body, data = {}) {
   }
 }
 
+// ─── Broadcast: write new-post signal to RTDB so all student clients update ───
+/**
+ * Writes a new-post broadcast to /broadcasts/new_posts/{postId}.
+ * Student Flutter clients listen here and show an in-app notification.
+ */
+export async function syncBroadcastToRTDB(postId, broadcastData) {
+  const db = getDB();
+  if (!db) return;
+  try {
+    await db.ref(`broadcasts/new_posts/${postId}`).set({
+      ...broadcastData,
+      createdAt: Date.now(),
+    });
+  } catch (err) {
+    console.error("RTDB syncBroadcast error:", err.message);
+  }
+}
+
+// ─── FCM topic notification (sends to all subscribers of a topic) ─────────────
+/**
+ * Send an FCM notification to every device subscribed to `topic`.
+ * Students subscribe to "new_posts" at app startup.
+ */
+export async function sendTopicNotification(topic, title, body, data = {}) {
+  if (!admin.apps.length) return;
+  const stringData = Object.fromEntries(
+    Object.entries(data).map(([k, v]) => [k, String(v)])
+  );
+  try {
+    await admin.messaging().send({
+      topic,
+      notification: { title, body },
+      data: stringData,
+      android: { priority: "high" },
+      apns: { payload: { aps: { sound: "default", badge: 1 } } },
+    });
+  } catch (err) {
+    console.error("FCM topic send error:", err.message);
+  }
+}
+
 export default admin;
