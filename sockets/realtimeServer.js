@@ -3,7 +3,7 @@ import Soultee from "../models/Soultee.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import admin from "../config/firebase.js";
 import { buildPersonalRoom } from "../services/notificationService.js";
-import { createPersistentMessage, serializeMessage } from "../services/messageService.js";
+import { createPersistentMessage, serializeMessage, markMessageDelivered, markMessageRead } from "../services/messageService.js";
 
 function emitSocketError(socket, message, details = {}) {
   socket.emit("socket_error", { message, ...details });
@@ -247,6 +247,45 @@ export function registerRealtimeServer(io) {
       socket.to(roomId).emit("user_stop_typing", senderId);
     });
 
+    // ── Message Status Updates ──────────────────────────────────────────────────
+    socket.on("message_delivered", async ({ roomId, messageId }) => {
+      if (!ensureJoinedRoom(socket, roomId)) {
+        return emitSocketError(socket, "Join the room before sending message status", { roomId });
+      }
+
+      try {
+        const message = await markMessageDelivered(messageId);
+        if (message) {
+          io.to(roomId).emit("message_updated", {
+            messageId: message._id,
+            status: "delivered",
+            deliveredAt: message.deliveredAt,
+          });
+        }
+      } catch (err) {
+        emitSocketError(socket, err.message, { roomId });
+      }
+    });
+
+    socket.on("message_read", async ({ roomId, messageId }) => {
+      if (!ensureJoinedRoom(socket, roomId)) {
+        return emitSocketError(socket, "Join the room before sending message status", { roomId });
+      }
+
+      try {
+        const message = await markMessageRead(messageId);
+        if (message) {
+          io.to(roomId).emit("message_updated", {
+            messageId: message._id,
+            status: "read",
+            readAt: message.readAt,
+          });
+        }
+      } catch (err) {
+        emitSocketError(socket, err.message, { roomId });
+      }
+    });
+
     socket.on("call_offer", ({ roomId, offer, callType }) => {
       if (!ensureJoinedRoom(socket, roomId)) {
         return emitSocketError(socket, "Join the room before starting a call", { roomId });
@@ -301,6 +340,32 @@ export function registerRealtimeServer(io) {
     socket.on("leave_question", ({ questionId }) => {
       if (!questionId) return;
       socket.leave(`question:${questionId}`);
+    });
+
+    // ── Request Lifecycle Events ────────────────────────────────────────────────
+    socket.on("request_declined", async ({ linkId, soulteeUid, studentUid }) => {
+      try {
+        const link = await StudentSoulteeLink.findByIdAndUpdate(
+          linkId,
+          { status: "declined" },
+          { new: true }
+        );
+
+        if (link) {
+          // Notify both users in real-time
+          io.to(`student:${studentUid}`).emit("connection_declined", {
+            linkId: link._id,
+            soulteeUid,
+          });
+
+          io.to(`soultee:${soulteeUid}`).emit("request_removed", {
+            linkId: link._id,
+            studentUid,
+          });
+        }
+      } catch (err) {
+        emitSocketError(socket, err.message);
+      }
     });
 
     socket.on("disconnect", async () => {

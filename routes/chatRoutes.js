@@ -10,8 +10,13 @@ import {
   getRoomLinkForParticipant,
   getUnreadMessageSummary,
   markRoomMessagesRead,
+  markMessageDelivered,
+  markMessageRead,
+  getMessageStatus,
+  markRoomMessagesDelivered,
   serializeMessage,
 } from "../services/messageService.js";
+import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const chatUploadsDir = path.join(__dirname, "../uploads/chat");
@@ -70,7 +75,8 @@ export default function createChatRoutes(io) {
         return res.status(403).json({ message: "Room access denied" });
       }
 
-      const messages = await (await import("../models/Message.js")).default
+      const Message = (await import("../models/Message.js")).default;
+      const messages = await Message
         .find({ roomId: req.params.roomId })
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -81,7 +87,7 @@ export default function createChatRoutes(io) {
         await markRoomMessagesRead({ roomId: req.params.roomId, userId, userRole });
       }
 
-      res.json({ messages: messages.reverse(), page });
+      res.json({ messages: messages.reverse().map(m => serializeMessage(m)), page });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
@@ -200,6 +206,77 @@ export default function createChatRoutes(io) {
     }
   });
 
+  // ─── PATCH /api/chat/:roomId/messages/:messageId/delivered ────────────────────
+  router.patch("/:roomId/messages/:messageId/delivered", async (req, res) => {
+    try {
+      const { userId, userRole } = req.body;
+      const { roomId, messageId } = req.params;
+
+      const link = await getRoomLinkForParticipant({
+        roomId,
+        userId,
+        userRole,
+        allowPending: true,
+      });
+
+      if (!link) {
+        return res.status(403).json({ message: "Room access denied" });
+      }
+
+      const message = await markMessageDelivered(messageId);
+      if (!message) {
+        return res.status(404).json({ message: "Message not found" });
+      }
+
+      const payload = serializeMessage(message);
+      io.to(roomId).emit("message_updated", {
+        messageId: message._id,
+        status: "delivered",
+        deliveredAt: message.deliveredAt,
+      });
+
+      res.json({ message: payload });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ─── PATCH /api/chat/:roomId/messages/:messageId/read ────────────────────
+  router.patch("/:roomId/messages/:messageId/read", async (req, res) => {
+    try {
+      const { userId, userRole } = req.body;
+      const { roomId, messageId } = req.params;
+
+      const link = await getRoomLinkForParticipant({
+        roomId,
+        userId,
+        userRole,
+        allowPending: true,
+      });
+
+      if (!link) {
+        return res.status(403).json({ message: "Room access denied" });
+      }
+
+      const message = await markMessageRead(messageId);
+      if (!message) {
+        return res.status(404).json({ message: "Message not found" });
+      }
+
+      const payload = serializeMessage(message);
+      io.to(roomId).emit("message_updated", {
+        messageId: message._id,
+        status: "read",
+        readAt: message.readAt,
+      });
+
+      res.json({ message: payload });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ─── POST /api/chat/:roomId/read — mark all as read ─────────────────────────
   router.post("/:roomId/read", async (req, res) => {
     try {
       const { userId, userRole } = req.body;
@@ -220,7 +297,107 @@ export default function createChatRoutes(io) {
         userRole,
       });
 
+      io.to(req.params.roomId).emit("room_messages_read", {
+        roomId: req.params.roomId,
+        userId,
+        userRole,
+      });
+
       res.json({ updated });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ─── GET /api/chat/active-sessions/:userUid ──────────────────────────────────
+  router.get("/active-sessions/:userUid", async (req, res) => {
+    try {
+      const { userUid } = req.params;
+      const userRole = req.query.userRole;
+
+      if (!userRole || !["student", "soultee"].includes(userRole)) {
+        return res.status(400).json({ message: "userRole query parameter is required and must be 'student' or 'soultee'" });
+      }
+
+      const query = { status: "active" };
+      if (userRole === "student") {
+        query.studentFirebaseUid = userUid;
+      } else {
+        query.soulteeFirebaseUid = userUid;
+      }
+
+      const sessions = await StudentSoulteeLink.find(query)
+        .sort({ acceptedAt: -1 })
+        .lean();
+
+      // Enrich with message metadata
+      const { getRoomMessageMetadata } = await import("../services/messageService.js");
+      const roomIds = sessions.map(s => String(s._id));
+      const metadataByRoom = await getRoomMessageMetadata({
+        roomIds,
+        recipientUid: userUid,
+        recipientRole: userRole,
+      });
+
+      const enrichedSessions = sessions.map(session => {
+        const roomId = String(session._id);
+        const metadata = metadataByRoom.get(roomId) || {};
+        return {
+          ...session,
+          roomId,
+          latestMessage: metadata.latestMessage || null,
+          unreadMessageCount: metadata.unreadCount || 0,
+        };
+      });
+
+      res.json({ sessions: enrichedSessions, total: enrichedSessions.length });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ─── GET /api/chat/pending-requests/:userUid ──────────────────────────────────
+  router.get("/pending-requests/:userUid", async (req, res) => {
+    try {
+      const { userUid } = req.params;
+      const userRole = req.query.userRole;
+
+      if (!userRole || !["student", "soultee"].includes(userRole)) {
+        return res.status(400).json({ message: "userRole query parameter is required and must be 'student' or 'soultee'" });
+      }
+
+      const query = { status: "pending" };
+      if (userRole === "student") {
+        query.studentFirebaseUid = userUid;
+      } else {
+        query.soulteeFirebaseUid = userUid;
+      }
+
+      const requests = await StudentSoulteeLink.find(query)
+        .sort({ requestedAt: -1 })
+        .lean();
+
+      // Enrich with message metadata
+      const { getRoomMessageMetadata } = await import("../services/messageService.js");
+      const roomIds = requests.map(r => String(r._id));
+      const metadataByRoom = await getRoomMessageMetadata({
+        roomIds,
+        recipientUid: userUid,
+        recipientRole: userRole,
+      });
+
+      const enrichedRequests = requests.map(request => {
+        const roomId = String(request._id);
+        const metadata = metadataByRoom.get(roomId) || {};
+        return {
+          ...request,
+          roomId,
+          latestMessage: metadata.latestMessage || null,
+          unreadMessageCount: metadata.unreadCount || 0,
+        };
+      });
+
+      res.json({ requests: enrichedRequests, total: enrichedRequests.length });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }

@@ -2,6 +2,7 @@ import express from "express";
 import FCMToken from "../models/FCMToken.js";
 import Notification from "../models/Notification.js";
 import { updateNotificationInRTDB, deleteNotificationFromRTDB } from "../config/firebase.js";
+import { registerFCMToken, deactivateFCMToken } from "../services/fcmService.js";
 
 const router = express.Router();
 
@@ -9,35 +10,36 @@ const router = express.Router();
 //  REGISTER / UPDATE FCM TOKEN
 //  Called by the app after Firebase login and whenever the token refreshes
 //  POST /api/notifications/register-token
-//  Body: { uid, role, token }
+//  Body: { userUid, token } - Updated to use new schema
 // ─────────────────────────────────────────────────────────────────────────────
 router.post("/register-token", async (req, res) => {
   try {
-    const { uid, role, token } = req.body;
-    if (!uid || !role || !token) {
-      return res.status(400).json({ message: "uid, role, and token are required" });
+    const { userUid, token } = req.body;
+    if (!userUid || !token) {
+      return res.status(400).json({ message: "userUid and token are required" });
     }
 
-    await FCMToken.findOneAndUpdate(
-      { uid },
-      { uid, role, token },
-      { upsert: true, new: true }
-    );
-
-    res.json({ message: "Token registered" });
+    const fcmToken = await registerFCMToken(userUid, token);
+    res.json({ message: "Token registered", token: fcmToken });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  REMOVE FCM TOKEN (on logout)
-//  DELETE /api/notifications/token/:uid
+//  REMOVE FCM TOKEN (on logout or device unpairing)
+//  POST /api/notifications/unregister-token
+//  Body: { userUid, token }
 // ─────────────────────────────────────────────────────────────────────────────
-router.delete("/token/:uid", async (req, res) => {
+router.post("/unregister-token", async (req, res) => {
   try {
-    await FCMToken.deleteOne({ uid: req.params.uid });
-    res.json({ message: "Token removed" });
+    const { userUid, token } = req.body;
+    if (!userUid || !token) {
+      return res.status(400).json({ message: "userUid and token are required" });
+    }
+
+    await deactivateFCMToken(userUid, token);
+    res.json({ message: "Token deactivated" });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

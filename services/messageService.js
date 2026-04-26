@@ -20,7 +20,9 @@ export function serializeMessage(message) {
     attachmentName: message.attachmentName || null,
     attachmentMimeType: message.attachmentMimeType || null,
     attachmentSize: message.attachmentSize || null,
-    readAt: message.readAt,
+    status: message.status || "sent",
+    deliveredAt: message.deliveredAt || null,
+    readAt: message.readAt || null,
     createdAt: message.createdAt,
     updatedAt: message.updatedAt,
   };
@@ -225,4 +227,92 @@ export async function getRoomMessageMetadata({
       },
     ])
   );
+}
+
+// ──── Message Status Tracking ─────────────────────────────────────────────────
+
+export async function markMessageDelivered(messageId) {
+  if (!messageId) return null;
+
+  const message = await Message.findByIdAndUpdate(
+    messageId,
+    {
+      status: "delivered",
+      deliveredAt: new Date(),
+    },
+    { new: true }
+  );
+
+  return message;
+}
+
+export async function markMessageRead(messageId) {
+  if (!messageId) return null;
+
+  const message = await Message.findByIdAndUpdate(
+    messageId,
+    {
+      status: "read",
+      readAt: new Date(),
+    },
+    { new: true }
+  );
+
+  return message;
+}
+
+export async function getMessageStatus(messageId) {
+  if (!messageId) return null;
+
+  const message = await Message.findById(messageId).select(
+    "_id status deliveredAt readAt createdAt"
+  );
+
+  return message;
+}
+
+export async function markRoomMessagesDelivered({ roomId, recipientUid, recipientRole }) {
+  if (!roomId || !recipientUid || !recipientRole) {
+    return 0;
+  }
+
+  const result = await Message.updateMany(
+    {
+      roomId,
+      recipientUid,
+      recipientRole,
+      status: "sent",
+    },
+    {
+      $set: {
+        status: "delivered",
+        deliveredAt: new Date(),
+      },
+    }
+  );
+
+  return result.modifiedCount || 0;
+}
+
+export async function markRoomMessagesRead({ roomId, userId, userRole }) {
+  if (!roomId || !userId || !userRole) {
+    return 0;
+  }
+
+  const result = await Message.updateMany(
+    {
+      roomId,
+      recipientUid: userId,
+      recipientRole: userRole,
+      status: { $ne: "read" },
+    },
+    {
+      $set: {
+        status: "read",
+        readAt: new Date(),
+      },
+    }
+  );
+
+  return result.modifiedCount || 0;
 }

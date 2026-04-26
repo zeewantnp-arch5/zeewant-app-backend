@@ -18,12 +18,20 @@ const messageSchema = new mongoose.Schema(
     attachmentName: { type: String, default: null },
     attachmentMimeType: { type: String, default: null },
     attachmentSize: { type: Number, default: null },
+    status: {
+      type: String,
+      enum: ["sent", "delivered", "read"],
+      default: "sent",
+      index: true,
+    },
+    deliveredAt: { type: Date, default: null },
     readAt: { type: Date, default: null },
   },
   { timestamps: true }
 );
 
 messageSchema.index({ roomId: 1, createdAt: -1 });
-messageSchema.index({ recipientUid: 1, recipientRole: 1, readAt: 1, createdAt: -1 });
+messageSchema.index({ recipientUid: 1, recipientRole: 1, status: 1, createdAt: -1 });
+messageSchema.index({ roomId: 1, status: 1 });
 
 export default mongoose.model("Message", messageSchema);

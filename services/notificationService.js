@@ -1,6 +1,7 @@
 import FCMToken from "../models/FCMToken.js";
 import Notification from "../models/Notification.js";
-import { sendPushNotification, syncNotificationToRTDB } from "../config/firebase.js";
+import { syncNotificationToRTDB } from "../config/firebase.js";
+import { sendPushNotification } from "./fcmService.js";
 
 export function buildPersonalRoom(role, uid) {
   return `${role}:${uid}`;
@@ -45,21 +46,20 @@ export async function createNotification(
     createdAt: notification.createdAt.getTime(),
   });
 
+  // Send FCM push notification
   try {
-    const tokenRecord = await FCMToken.findOne({ uid: recipientUid }).lean();
-    if (tokenRecord) {
-      const stringData = Object.fromEntries(
-        Object.entries(data).map(([key, value]) => [key, String(value)])
-      );
-      await sendPushNotification(tokenRecord.token, title, body, stringData);
-    }
+    const stringData = Object.fromEntries(
+      Object.entries(data).map(([key, value]) => [key, String(value)])
+    );
+
+    await sendPushNotification(recipientUid, {
+      title,
+      body,
+      data: stringData,
+    });
   } catch (err) {
-    if (
-      err.code === "messaging/registration-token-not-registered" ||
-      err.code === "messaging/invalid-registration-token"
-    ) {
-      await FCMToken.deleteOne({ uid: recipientUid });
-    }
+    console.error("FCM push notification error:", err.message);
+    // Don't fail the notification creation if FCM fails
   }
 
   return notification;
