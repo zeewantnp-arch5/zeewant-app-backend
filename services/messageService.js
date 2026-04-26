@@ -293,26 +293,3 @@ export async function markRoomMessagesDelivered({ roomId, recipientUid, recipien
 
   return result.modifiedCount || 0;
 }
-
-export async function markRoomMessagesRead({ roomId, userId, userRole }) {
-  if (!roomId || !userId || !userRole) {
-    return 0;
-  }
-
-  const result = await Message.updateMany(
-    {
-      roomId,
-      recipientUid: userId,
-      recipientRole: userRole,
-      status: { $ne: "read" },
-    },
-    {
-      $set: {
-        status: "read",
-        readAt: new Date(),
-      },
-    }
-  );
-
-  return result.modifiedCount || 0;
-}
