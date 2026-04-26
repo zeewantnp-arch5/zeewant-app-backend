@@ -1557,14 +1557,15 @@ router.patch(
       );
       if (!application) return res.status(404).json({ message: "Application not found" });
 
+      const approvedCategory = normalizeSoulteeCategory(application.category) || "General";
+
       // Sync approval to Firestore + upsert MongoDB Soultee profile
       try {
-        const approvedCategory = normalizeSoulteeCategory(application.category) || "General";
         const db = getFirestore();
         await db.collection("users").doc(application.firebaseUid).update({
           role:          "soultee",
           rolePending:   false,
-            soulteeType:   approvedCategory,
+          soulteeType:   approvedCategory,
           soulteeStatus: "Active",
           badge,
         });
@@ -1574,7 +1575,7 @@ router.patch(
           {
             firebaseUid:     application.firebaseUid,
             name:            application.name,
-              category:        approvedCategory,
+            category:        approvedCategory,
             gender:          application.gender || "",
             specialization:  (application.specializations || []).join(", "),
             languages:       application.languages || [],
