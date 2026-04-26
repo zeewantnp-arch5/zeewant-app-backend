@@ -23,6 +23,26 @@ const upload = multer({
 export default function createSoulteeApplicationRoutes(io) {
   const router = express.Router();
 
+  const normalizeSoulteeCategory = (value) => {
+    const raw = String(value || '').trim().toLowerCase();
+    if (!raw) return '';
+    if (raw == 'peer counsellor' ||
+        raw == 'peer counselor' ||
+        raw == 'peer counselling' ||
+        raw == 'peer counseling' ||
+        raw == 'peer' ||
+        raw == 'peers') {
+      return 'Peer Counsellor';
+    }
+    if (raw == 'coach' || raw == 'coaching') {
+      return 'Coach';
+    }
+    if (raw == 'life warrior' || raw == 'warrior' || raw == 'lifewarrior') {
+      return 'Life Warrior';
+    }
+    return String(value || '').trim();
+  };
+
   // ─────────────────────────────────────────────────────────────────────────
   //  POST /api/soultee-application/submit
   //  Body (JSON): all onboarding fields
@@ -52,7 +72,8 @@ export default function createSoulteeApplicationRoutes(io) {
 
       const payload = {
         firebaseUid, name, phone, email, dateOfBirth, gender, city, country,
-        category, specializations, experienceYears, bio, languages,
+        category: normalizeSoulteeCategory(category),
+        specializations, experienceYears, bio, languages,
         feePerSession, availabilityHours, emotionalSupportAreas,
         certifications, profileImageUrl, introVideoUrl, socialLinks,
       };

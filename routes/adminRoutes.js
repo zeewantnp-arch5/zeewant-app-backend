@@ -37,6 +37,50 @@ const upload = multer({
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
 
+const normalizeSoulteeCategory = (value) => {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  if ([
+    "peer counsellor",
+    "peer counselor",
+    "peer counselling",
+    "peer counseling",
+    "peer",
+    "peers",
+  ].includes(raw)) {
+    return "Peer Counsellor";
+  }
+  if (["coach", "coaching"].includes(raw)) {
+    return "Coach";
+  }
+  if (["life warrior", "warrior", "lifewarrior"].includes(raw)) {
+    return "Life Warrior";
+  }
+  return String(value || "").trim();
+};
+
+const expandSoulteeCategoryAliases = (value) => {
+  const normalized = normalizeSoulteeCategory(value);
+  if (!normalized) return [];
+  if (normalized === "Peer Counsellor") {
+    return [
+      "Peer Counsellor",
+      "Peer Counselor",
+      "Peer Counselling",
+      "Peer Counseling",
+      "Peer",
+      "Peers",
+    ];
+  }
+  if (normalized === "Coach") {
+    return ["Coach", "Coaching"];
+  }
+  if (normalized === "Life Warrior") {
+    return ["Life Warrior", "Warrior", "LifeWarrior"];
+  }
+  return [normalized];
+};
+
 // ─── Auth Middleware ──────────────────────────────────────────────────────────
 const requireAdmin = (req, res, next) => {
   const auth = req.headers["authorization"] || "";
@@ -1409,7 +1453,9 @@ router.get("/applications", requireAdmin, async (req, res) => {
 
     const filter = {};
     if (req.query.status   && req.query.status   !== "all") filter.status   = req.query.status;
-    if (req.query.category && req.query.category !== "all") filter.category = req.query.category;
+    if (req.query.category && req.query.category !== "all") {
+      filter.category = { $in: expandSoulteeCategoryAliases(req.query.category) };
+    }
     if (req.query.search) {
       filter.$or = [
         { name:  { $regex: req.query.search, $options: "i" } },
@@ -1513,11 +1559,12 @@ router.patch(
 
       // Sync approval to Firestore + upsert MongoDB Soultee profile
       try {
+        const approvedCategory = normalizeSoulteeCategory(application.category) || "General";
         const db = getFirestore();
         await db.collection("users").doc(application.firebaseUid).update({
           role:          "soultee",
           rolePending:   false,
-          soulteeType:   application.category || "General",
+            soulteeType:   approvedCategory,
           soulteeStatus: "Active",
           badge,
         });
@@ -1527,6 +1574,7 @@ router.patch(
           {
             firebaseUid:     application.firebaseUid,
             name:            application.name,
+              category:        approvedCategory,
             gender:          application.gender || "",
             specialization:  (application.specializations || []).join(", "),
             languages:       application.languages || [],
@@ -1552,7 +1600,7 @@ router.patch(
           data: {
             type:       "application_approved",
             badge,
-            category:   application.category || "",
+            category:   approvedCategory,
           },
         });
       }

@@ -57,8 +57,8 @@ export default function createSoulteeDashboardRoutes(io) {
   router.post("/register", async (req, res) => {
     try {
       const { firebaseUid, name, gender, specialization, experienceYears, languages, bio } = req.body;
-      if (!firebaseUid || !name) {
-        return res.status(400).json({ message: "firebaseUid and name are required" });
+      if (!firebaseUid) {
+        return res.status(400).json({ message: "firebaseUid is required" });
       }
 
       if (!admin.apps.length) {
@@ -74,17 +74,104 @@ export default function createSoulteeDashboardRoutes(io) {
         return res.status(403).json({ message: "SOULTEE profile is not approved yet" });
       }
 
+      const existingSoultee = await Soultee.findOne({ firebaseUid }).lean();
+
+      const asCleanString = (value) =>
+        typeof value === "string" && value.trim().length > 0 ? value.trim() : "";
+
+      const parseLanguages = (value) => {
+        if (Array.isArray(value)) {
+          return value
+            .map((entry) => asCleanString(entry))
+            .filter(Boolean);
+        }
+
+        if (typeof value === "string") {
+          return value
+            .split(",")
+            .map((entry) => entry.trim())
+            .filter(Boolean);
+        }
+
+        return [];
+      };
+
+      const parsedBodyLanguages = parseLanguages(languages);
+      const parsedFirestoreLanguages = parseLanguages(userData.languages);
+      const parsedExistingLanguages = parseLanguages(existingSoultee?.languages);
+
+      const resolvedName =
+        asCleanString(name) ||
+        asCleanString(userData.name) ||
+        asCleanString(userData.displayName) ||
+        asCleanString(existingSoultee?.name);
+
+      if (!resolvedName) {
+        return res.status(400).json({ message: "SOULTEE name is missing in request and profile" });
+      }
+
+      const resolvedCategory =
+        asCleanString(userData.soulteeType) || asCleanString(existingSoultee?.category) || null;
+      const resolvedGender =
+        asCleanString(gender) ||
+        asCleanString(userData.gender) ||
+        asCleanString(existingSoultee?.gender) ||
+        null;
+      const resolvedSpecialization =
+        asCleanString(specialization) ||
+        asCleanString(userData.specialization) ||
+        asCleanString(existingSoultee?.specialization) ||
+        null;
+
+      const rawExperienceYears =
+        experienceYears ?? userData.experienceYears ?? existingSoultee?.experienceYears;
+      const parsedExperienceYears = Number(rawExperienceYears);
+      const resolvedExperienceYears = Number.isFinite(parsedExperienceYears)
+        ? Math.max(0, parsedExperienceYears)
+        : 0;
+
+      const resolvedLanguages = parsedBodyLanguages.length
+        ? parsedBodyLanguages
+        : parsedFirestoreLanguages.length
+          ? parsedFirestoreLanguages
+          : parsedExistingLanguages;
+
+      const resolvedBio =
+        asCleanString(bio) ||
+        asCleanString(userData.bio) ||
+        asCleanString(existingSoultee?.bio) ||
+        null;
+
+      const profileImage =
+        asCleanString(userData.profileImage) ||
+        asCleanString(userData.photoURL) ||
+        asCleanString(existingSoultee?.profileImage) ||
+        null;
+
+      const feeRaw = userData.feePerSession ?? userData.fees ?? existingSoultee?.feePerSession;
+      const parsedFee = Number(feeRaw);
+      const resolvedFeePerSession = Number.isFinite(parsedFee) ? Math.max(0, parsedFee) : 0;
+
+      const durationRaw = userData.durationMinutes ?? existingSoultee?.durationMinutes;
+      const parsedDuration = Number(durationRaw);
+      const resolvedDurationMinutes = Number.isFinite(parsedDuration)
+        ? Math.max(1, parsedDuration)
+        : 60;
+
       const soultee = await Soultee.findOneAndUpdate(
         { firebaseUid },
         {
           firebaseUid,
-          name,
-          category: (userData.soulteeType || "").toString(),
-          gender,
-          specialization,
-          experienceYears,
-          languages,
-          bio,
+          name: resolvedName,
+          category: resolvedCategory,
+          gender: resolvedGender,
+          specialization: resolvedSpecialization,
+          experienceYears: resolvedExperienceYears,
+          languages: resolvedLanguages,
+          bio: resolvedBio,
+          profileImage,
+          feePerSession: resolvedFeePerSession,
+          durationMinutes: resolvedDurationMinutes,
         },
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
@@ -92,16 +179,16 @@ export default function createSoulteeDashboardRoutes(io) {
       // Sync profile to Firebase RTDB for real-time reads
       syncProfileToRTDB(firebaseUid, {
         uid: firebaseUid,
-        name,
-        gender: gender || null,
-        specialization: specialization || null,
-        experienceYears: experienceYears || null,
-        languages: languages || [],
-        bio: bio || null,
+        name: resolvedName,
+        gender: resolvedGender,
+        specialization: resolvedSpecialization,
+        experienceYears: resolvedExperienceYears,
+        languages: resolvedLanguages,
+        bio: resolvedBio,
         category: soultee.category || null,
         status: soultee.status,
         rating: soultee.rating,
-        profileImage: soultee.profileImage || null,
+        profileImage: profileImage || soultee.profileImage || null,
         role: "soultee",
       });
 
