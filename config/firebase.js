@@ -18,17 +18,30 @@ try {
 }
 
 if (serviceAccount && !admin.apps.length) {
-  admin.initializeApp({
+  const firebaseConfig = {
     credential: admin.credential.cert(serviceAccount),
-    databaseURL: process.env.FIREBASE_DATABASE_URL,
     storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
-  });
+  };
+  const dbUrl = process.env.FIREBASE_DATABASE_URL?.trim();
+  if (dbUrl) {
+    firebaseConfig.databaseURL = dbUrl;
+  } else {
+    console.warn(
+      "⚠️  FIREBASE_DATABASE_URL is missing — RTDB sync features are disabled"
+    );
+  }
+  admin.initializeApp(firebaseConfig);
 }
 
 // ─── Realtime Database reference ─────────────────────────────────────────────
 function getDB() {
   if (!admin.apps.length) return null;
-  return admin.database();
+  try {
+    return admin.database();
+  } catch (err) {
+    console.warn(`⚠️  RTDB unavailable: ${err.message}`);
+    return null;
+  }
 }
 
 // ─── Profile sync ─────────────────────────────────────────────────────────────
