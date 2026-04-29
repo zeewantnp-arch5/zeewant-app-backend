@@ -24,8 +24,8 @@ const notificationSchema = new mongoose.Schema(
         // Soulpana question comments
         "new_comment",                   // student/soultee receives: new comment on their question
         // Soulpost lifecycle
-        "post_approved",                 // student receives: post approved & live
-        "post_rejected",                 // student receives: post rejected with reason
+        "post_approved",                 // author receives: post approved & live (student or soultee)
+        "post_rejected",                 // author receives: post rejected with reason (student or soultee)
       ],
       required: true,
     },

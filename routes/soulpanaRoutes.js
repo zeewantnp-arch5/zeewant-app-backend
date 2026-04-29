@@ -338,10 +338,29 @@ export default function createSoulpanaRoutes(io) {
           authorRole: "soultee",
         });
         soulteeCommenters.forEach((uid) => notifyUids.add(uid));
-        notifyUids.forEach((uid) => {
+
+        // Socket emit (live) + persistent notification + FCM push for each soultee
+        const notifyPromises = [...notifyUids].map((uid) => {
           emitToUser(io, "soultee", uid, "new_comment", commentData);
           emitToUser(io, "soultee", uid, "question_activity", activityPayload);
+          return createNotification(io, {
+            recipientUid:  uid,
+            recipientRole: "soultee",
+            type:          "new_comment",
+            title:         `${authorName} replied on a question you're following`,
+            body:          text.trim().slice(0, 100),
+            data: {
+              type:       "new_comment",
+              questionId: String(questionId),
+              commentId:  String(commentData._id),
+              authorName,
+              authorRole: "student",
+            },
+          });
         });
+        Promise.all(notifyPromises).catch((err) =>
+          console.error("[Comment notify soultee] error:", err.message)
+        );
       }
 
       res.status(201).json(commentData);

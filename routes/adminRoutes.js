@@ -1400,17 +1400,19 @@ router.get("/media/signed-url", requireAdmin, async (req, res) => {
 
 // ─── Helper: send multi-channel notification to an applicant ─────────────────
 async function notifyApplicant(io, { recipientUid, type, title, body, data = {} }) {
+  // application_approved → user is now a soultee; all others → still a student
+  const recipientRole = type === "application_approved" ? "soultee" : "student";
+
   const notification = await Notification.create({
     recipientUid,
-    recipientRole: "student", // applicants are students before approval
+    recipientRole,
     type,
     title,
     body,
     data,
   });
 
-  // Socket.io → personal room
-  io.to(`student:${recipientUid}`).emit("new_notification", {
+  const payload = {
     _id:       notification._id,
     type:      notification.type,
     title:     notification.title,
@@ -1418,7 +1420,11 @@ async function notifyApplicant(io, { recipientUid, type, title, body, data = {} 
     data:      Object.fromEntries(notification.data || []),
     read:      false,
     createdAt: notification.createdAt,
-  });
+  };
+
+  // Emit to both rooms — user may be on either dashboard depending on timing
+  io.to(`soultee:${recipientUid}`).emit("new_notification", payload);
+  io.to(`student:${recipientUid}`).emit("new_notification", payload);
 
   // Firebase RTDB sync
   syncNotificationToRTDB(recipientUid, String(notification._id), {
