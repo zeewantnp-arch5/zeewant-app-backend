@@ -21,6 +21,8 @@ const notificationSchema = new mongoose.Schema(
         "application_approved",          // applicant receives: application approved
         "application_rejected",          // applicant receives: application rejected
         "application_revision_requested",// applicant receives: changes needed
+        // Soulpana question comments
+        "new_comment",                   // student/soultee receives: new comment on their question
         // Soulpost lifecycle
         "post_approved",                 // student receives: post approved & live
         "post_rejected",                 // student receives: post rejected with reason

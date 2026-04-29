@@ -532,7 +532,7 @@ export async function notifyPostAuthor(io, { recipientUid, recipientRole = "stud
   });
 
   try {
-    const tokenRecord = await FCMToken.findOne({ uid: recipientUid }).lean();
+    const tokenRecord = await FCMToken.findOne({ userUid: recipientUid }).lean();
     if (tokenRecord) {
       const stringData = Object.fromEntries(
         Object.entries(data).map(([k, v]) => [k, String(v)])
@@ -544,7 +544,7 @@ export async function notifyPostAuthor(io, { recipientUid, recipientRole = "stud
       e.code === "messaging/registration-token-not-registered" ||
       e.code === "messaging/invalid-registration-token"
     ) {
-      await FCMToken.deleteOne({ uid: recipientUid });
+      await FCMToken.deleteOne({ userUid: recipientUid });
     }
   }
 }

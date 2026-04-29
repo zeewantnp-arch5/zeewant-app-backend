@@ -7,7 +7,7 @@ import { dirname } from "path";
 import Soulpana from "../models/Soulpana.js";
 import SoulpanaComment from "../models/SoulpanaComment.js";
 import Soultee from "../models/Soultee.js";
-import { emitToUser } from "../services/notificationService.js";
+import { emitToUser, createNotification } from "../services/notificationService.js";
 import { syncCommentInteractionToRTDB, syncCommentToRTDB, syncEngagementToRTDB } from "../config/firebase.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -313,6 +313,22 @@ export default function createSoulpanaRoutes(io) {
         // Soultee replied → notify the question owner (student)
         emitToUser(io, "student", question.userId, "new_comment", commentData);
         emitToUser(io, "student", question.userId, "question_activity", activityPayload);
+
+        // Persist notification + FCM push to student
+        createNotification(io, {
+          recipientUid:  question.userId,
+          recipientRole: "student",
+          type:          "new_comment",
+          title:         `${authorName} commented on your question`,
+          body:          text.trim().slice(0, 100),
+          data: {
+            type:       "new_comment",
+            questionId: String(questionId),
+            commentId:  String(commentData._id),
+            authorName,
+            authorRole: "soultee",
+          },
+        }).catch((err) => console.error("[Comment notify] error:", err.message));
       } else {
         // Student commented → notify assigned soultee (if any) + soultees who replied before
         const notifyUids = new Set();

@@ -607,6 +607,17 @@ router.patch(
         { upsert: true, new: true }
       );
 
+      const io = req.app.get("io");
+      if (io) {
+        notifyApplicant(io, {
+          recipientUid: uid,
+          type: "application_approved",
+          title: "Congratulations! You're now a SOULTEE 🎉",
+          body: "Your SOULTEE profile has been approved. You can now go online and start helping students.",
+          data: { type: "application_approved" },
+        }).catch((err) => console.error("[Soultee Approve] Notify error:", err.message));
+      }
+
       res.json({ message: "SOULTEE approved successfully" });
     } catch (error) {
       res.status(500).json({ message: error.message });
@@ -624,6 +635,18 @@ router.patch(
     try {
       const db = getFirestore();
       await db.collection("users").doc(uid).update({ role: "Student", rolePending: false });
+
+      const io = req.app.get("io");
+      if (io) {
+        notifyApplicant(io, {
+          recipientUid: uid,
+          type: "application_rejected",
+          title: "SOULTEE Profile Update",
+          body: "Your SOULTEE profile application was not approved at this time.",
+          data: { type: "application_rejected" },
+        }).catch((err) => console.error("[Soultee Reject] Notify error:", err.message));
+      }
+
       res.json({ message: "SOULTEE rejected" });
     } catch (error) {
       res.status(500).json({ message: error.message });
@@ -1407,7 +1430,7 @@ async function notifyApplicant(io, { recipientUid, type, title, body, data = {} 
 
   // FCM push
   try {
-    const tokenRecord = await FCMToken.findOne({ uid: recipientUid }).lean();
+    const tokenRecord = await FCMToken.findOne({ userUid: recipientUid }).lean();
     if (tokenRecord) {
       const stringData = Object.fromEntries(
         Object.entries(data).map(([k, v]) => [k, String(v)])
@@ -1419,7 +1442,7 @@ async function notifyApplicant(io, { recipientUid, type, title, body, data = {} 
       e.code === "messaging/registration-token-not-registered" ||
       e.code === "messaging/invalid-registration-token"
     ) {
-      await FCMToken.deleteOne({ uid: recipientUid });
+      await FCMToken.deleteOne({ userUid: recipientUid });
     }
   }
 }
