@@ -29,6 +29,7 @@ import supportRoutes from "./routes/supportRoutes.js";
 import createPostRoutes from "./routes/postRoutes.js";
 import { registerSupportNamespace } from "./sockets/supportNamespace.js";
 import emotionalPrescriptionRoutes from "./routes/emotionalPrescriptionRoutes.js";
+import soulMeterRoutes from "./routes/soulMeterRoutes.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -71,6 +72,7 @@ app.use("/api/marketing",             marketingRoutes);
 app.use("/api/support",               supportRoutes);
 app.use("/api/posts",                 createPostRoutes(io));
 app.use("/api/emotional-prescription", emotionalPrescriptionRoutes);
+app.use("/api/soulmeter",            soulMeterRoutes);
 app.use(express.static(join(__dirname, "public")));
 app.use("/uploads", express.static(join(__dirname, "uploads")));
 
