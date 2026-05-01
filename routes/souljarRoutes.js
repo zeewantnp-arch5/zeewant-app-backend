@@ -1,6 +1,7 @@
 import express from "express";
 import mongoose from "mongoose";
 import Souljar from "../models/souljar.js";
+import { emitSouljarAnalyticsUpdate } from "../sockets/analyticsNamespace.js";
 
 const router = express.Router();
 
@@ -160,6 +161,14 @@ router.post("/", async (req, res) => {
       attachmentNames,
       wordCount: text ? text.trim().split(/\s+/).length : 0,
     });
+
+    // Fire-and-forget realtime analytics push for admin dashboard updates.
+    const io = req.app.get("io");
+    if (io) {
+      emitSouljarAnalyticsUpdate(io, newEntry).catch((err) => {
+        console.error("Souljar analytics emit error:", err.message);
+      });
+    }
 
     res.status(201).json(newEntry);
   } catch (error) {

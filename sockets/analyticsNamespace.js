@@ -2,10 +2,22 @@ import jwt from "jsonwebtoken";
 import Soultee from "../models/Soultee.js";
 import Session from "../models/Session.js";
 import Soulpana from "../models/Soulpana.js";
+import Souljar from "../models/souljar.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import admin from "../config/firebase.js";
 
 const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
+const ANALYTICS_ALLOWED_ROLES = new Set(["superAdmin", "analyticsAdmin"]);
+const souljarEmitDedupe = new Map();
+
+function cleanupSouljarDedupe() {
+  const now = Date.now();
+  for (const [key, ts] of souljarEmitDedupe.entries()) {
+    if (now - ts > 60_000) {
+      souljarEmitDedupe.delete(key);
+    }
+  }
+}
 
 function getFirestoreDb() {
   if (!admin.apps.length) return null;
@@ -98,6 +110,67 @@ async function buildSoulpanaUpdate() {
   return { type: "soulpana_update", ts: Date.now(), total, pending, answered };
 }
 
+export async function buildSouljarRealtimeSummary() {
+  const [dailyTotal, weeklyTotal, monthlyTotal] = await Promise.all([
+    Souljar.countDocuments({
+      createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+    }),
+    Souljar.countDocuments({
+      createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+    }),
+    Souljar.countDocuments({
+      createdAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
+    }),
+  ]);
+
+  return {
+    type: "souljar_update",
+    ts: Date.now(),
+    summary: {
+      dailyTotal,
+      weeklyTotal,
+      monthlyTotal,
+    },
+  };
+}
+
+export async function emitSouljarAnalyticsUpdate(io, sourceDoc = null) {
+  try {
+    const ns = io.of("/analytics");
+    if (!ns || ns.sockets.size === 0) return;
+
+    const dedupeKey = sourceDoc?._id?.toString();
+    if (dedupeKey) {
+      cleanupSouljarDedupe();
+      if (souljarEmitDedupe.has(dedupeKey)) return;
+      souljarEmitDedupe.set(dedupeKey, Date.now());
+    }
+
+    const summary = await buildSouljarRealtimeSummary();
+    ns.to("analytics_room").emit("analytics_snapshot", summary);
+
+    if (sourceDoc) {
+      const liveEntry = {
+        type: "souljar_live_entry",
+        ts: Date.now(),
+        entry: {
+          id: sourceDoc._id,
+          jarCode: sourceDoc.jarCode,
+          category: String(sourceDoc.topic || "Uncategorized"),
+          mood: String(sourceDoc.mood || "Unknown"),
+          anonymous: !!sourceDoc.anonymous,
+          wordCount: sourceDoc.wordCount || 0,
+          reflectionSeconds: sourceDoc.reflectionSeconds || 0,
+          createdAt: sourceDoc.createdAt || new Date(),
+        },
+      };
+      ns.to("analytics_room").emit("analytics_snapshot", liveEntry);
+    }
+  } catch (err) {
+    console.error("Analytics Souljar emit error:", err.message);
+  }
+}
+
 // ── Namespace registration ────────────────────────────────────────────────────
 
 export function registerAnalyticsNamespace(io) {
@@ -111,6 +184,9 @@ export function registerAnalyticsNamespace(io) {
     if (!token) return next(new Error("No analytics token"));
     try {
       socket.data.admin = jwt.verify(token, JWT_SECRET);
+      if (!ANALYTICS_ALLOWED_ROLES.has(socket.data.admin?.role)) {
+        return next(new Error("Insufficient permissions"));
+      }
       next();
     } catch {
       next(new Error("Unauthorized analytics token"));
@@ -153,6 +229,7 @@ export function registerAnalyticsNamespace(io) {
   // ── MongoDB Change Streams (requires Atlas/replica set; fails gracefully) ──
   let sessionStream = null;
   let soulpanaStream = null;
+  let souljarStream = null;
 
   const setupChangeStreams = () => {
     try {
@@ -193,6 +270,24 @@ export function registerAnalyticsNamespace(io) {
         soulpanaStream = null;
       });
 
+      souljarStream = Souljar.watch(
+        [{ $match: { operationType: "insert" } }],
+        { fullDocument: "updateLookup" }
+      );
+
+      souljarStream.on("change", async (change) => {
+        if (ns.sockets.size === 0) return;
+        try {
+          await emitSouljarAnalyticsUpdate(io, change.fullDocument);
+        } catch { /* suppress */ }
+      });
+
+      souljarStream.on("error", (err) => {
+        console.warn("Analytics souljar stream error:", err.message);
+        souljarStream?.close();
+        souljarStream = null;
+      });
+
       console.log("📊 Analytics change streams active");
     } catch (err) {
       console.log("📊 Analytics change streams unavailable — polling only:", err.message);
@@ -207,5 +302,6 @@ export function registerAnalyticsNamespace(io) {
     clearInterval(pushInterval);
     sessionStream?.close();
     soulpanaStream?.close();
+    souljarStream?.close();
   };
 }

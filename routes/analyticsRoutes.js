@@ -1,5 +1,6 @@
 import express from "express";
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
 import Soultee from "../models/Soultee.js";
 import Session from "../models/Session.js";
 import Soulpana from "../models/Soulpana.js";
@@ -10,6 +11,7 @@ import admin from "../config/firebase.js";
 
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
+const ANALYTICS_ALLOWED_ROLES = new Set(["superAdmin", "analyticsAdmin"]);
 
 // ─── Auth middleware ──────────────────────────────────────────────────────────
 const requireAdmin = (req, res, next) => {
@@ -22,6 +24,14 @@ const requireAdmin = (req, res, next) => {
   } catch {
     return res.status(401).json({ message: "Invalid or expired token" });
   }
+};
+
+const requireAnalyticsAccess = (req, res, next) => {
+  const role = req.admin?.role;
+  if (!ANALYTICS_ALLOWED_ROLES.has(role)) {
+    return res.status(403).json({ message: "Insufficient permissions" });
+  }
+  next();
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -52,8 +62,55 @@ function assignBadge(score) {
   return "Silver";
 }
 
+function normalizeSouljarCategory(topic = "") {
+  return String(topic || "").trim() || "Uncategorized";
+}
+
+function normalizeSegment(rawSegment = "all") {
+  const segment = String(rawSegment || "all").trim().toLowerCase();
+  const allowed = new Set([
+    "all",
+    "anonymous",
+    "identified",
+    "high_reflection",
+    "with_attachments",
+  ]);
+  return allowed.has(segment) ? segment : "all";
+}
+
+function segmentFilter(segment) {
+  switch (segment) {
+    case "anonymous":
+      return { anonymous: true };
+    case "identified":
+      return { anonymous: { $ne: true } };
+    case "high_reflection":
+      return { reflectionSeconds: { $gte: 120 } };
+    case "with_attachments":
+      return {
+        $or: [
+          { imagePath: { $exists: true, $nin: [null, ""] } },
+          { "attachmentNames.0": { $exists: true } },
+        ],
+      };
+    default:
+      return {};
+  }
+}
+
+function anonymizeUser(userId, anonymous) {
+  if (anonymous) return "Anonymous";
+  const hash = crypto
+    .createHash("sha1")
+    .update(String(userId || "unknown"))
+    .digest("hex")
+    .slice(0, 8)
+    .toUpperCase();
+  return `User-${hash}`;
+}
+
 // ── GET /api/analytics/dashboard ─────────────────────────────────────────────
-router.get("/dashboard", requireAdmin, async (req, res) => {
+router.get("/dashboard", requireAdmin, requireAnalyticsAccess, async (req, res) => {
   try {
     const { period = "weekly", start, end } = req.query;
     const { since, until } = getDateRange(period, start, end);
@@ -146,7 +203,7 @@ router.get("/dashboard", requireAdmin, async (req, res) => {
 });
 
 // ── GET /api/analytics/app-performance ───────────────────────────────────────
-router.get("/app-performance", requireAdmin, async (req, res) => {
+router.get("/app-performance", requireAdmin, requireAnalyticsAccess, async (req, res) => {
   try {
     const { period = "weekly", start, end } = req.query;
     const { since, until } = getDateRange(period, start, end);
@@ -221,7 +278,7 @@ router.get("/app-performance", requireAdmin, async (req, res) => {
 });
 
 // ── GET /api/analytics/badges ─────────────────────────────────────────────────
-router.get("/badges", requireAdmin, async (req, res) => {
+router.get("/badges", requireAdmin, requireAnalyticsAccess, async (req, res) => {
   try {
     const [soultees, sessionCounts] = await Promise.all([
       Soultee.find()
@@ -265,7 +322,7 @@ router.get("/badges", requireAdmin, async (req, res) => {
 });
 
 // ── GET /api/analytics/financial ─────────────────────────────────────────────
-router.get("/financial", requireAdmin, async (req, res) => {
+router.get("/financial", requireAdmin, requireAnalyticsAccess, async (req, res) => {
   try {
     const { period = "weekly", start, end } = req.query;
     const { since, until } = getDateRange(period, start, end);
@@ -345,7 +402,7 @@ router.get("/financial", requireAdmin, async (req, res) => {
 });
 
 // ── GET /api/analytics/engagement ─────────────────────────────────────────────
-router.get("/engagement", requireAdmin, async (req, res) => {
+router.get("/engagement", requireAdmin, requireAnalyticsAccess, async (req, res) => {
   try {
     const { period = "weekly", start, end } = req.query;
     const { since, until } = getDateRange(period, start, end);
@@ -407,7 +464,7 @@ router.get("/engagement", requireAdmin, async (req, res) => {
 });
 
 // ── GET /api/analytics/soulpana ───────────────────────────────────────────────
-router.get("/soulpana", requireAdmin, async (req, res) => {
+router.get("/soulpana", requireAdmin, requireAnalyticsAccess, async (req, res) => {
   try {
     const { period = "weekly", start, end } = req.query;
     const { since, until } = getDateRange(period, start, end);
@@ -471,6 +528,192 @@ router.get("/soulpana", requireAdmin, async (req, res) => {
         status:   s.status || "pending",
         assigned: !!s.assignedSoulteeUid,
         date:     s.createdAt,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ── GET /api/analytics/souljar ───────────────────────────────────────────────
+router.get("/souljar", requireAdmin, requireAnalyticsAccess, async (req, res) => {
+  try {
+    const {
+      period = "weekly",
+      start,
+      end,
+      category,
+      segment = "all",
+      limit = "12",
+    } = req.query;
+
+    const { since, until } = getDateRange(period, start, end);
+    const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 12, 5), 50);
+    const normalizedSegment = normalizeSegment(segment);
+
+    const scopedFilter = {
+      createdAt: { $gte: since, $lte: until },
+      ...segmentFilter(normalizedSegment),
+    };
+
+    if (category && String(category).trim().toLowerCase() !== "all") {
+      scopedFilter.topic = String(category).trim();
+    }
+
+    const dailySince = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const weeklySince = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const monthlySince = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    const [
+      totalAll,
+      totalSince,
+      dailyTotal,
+      weeklyTotal,
+      monthlyTotal,
+      uniqueUsersRaw,
+      categoryBreakdownRaw,
+      submissionTrend,
+      moodTrendRaw,
+      heatmapRaw,
+      recentRaw,
+      reflectionSummary,
+      attachmentCount,
+      anonymousCount,
+    ] = await Promise.all([
+      Souljar.countDocuments(),
+      Souljar.countDocuments(scopedFilter),
+      Souljar.countDocuments({ createdAt: { $gte: dailySince } }),
+      Souljar.countDocuments({ createdAt: { $gte: weeklySince } }),
+      Souljar.countDocuments({ createdAt: { $gte: monthlySince } }),
+      Souljar.distinct("userId", scopedFilter),
+      Souljar.aggregate([
+        { $match: scopedFilter },
+        { $group: { _id: "$topic", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+      ]),
+      Souljar.aggregate([
+        { $match: scopedFilter },
+        {
+          $group: {
+            _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ]),
+      Souljar.aggregate([
+        { $match: scopedFilter },
+        {
+          $group: {
+            _id: {
+              date: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+              mood: "$mood",
+            },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { "_id.date": 1 } },
+      ]),
+      Souljar.aggregate([
+        { $match: scopedFilter },
+        {
+          $group: {
+            _id: { hour: { $hour: "$createdAt" } },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { "_id.hour": 1 } },
+      ]),
+      Souljar.find(scopedFilter)
+        .sort({ createdAt: -1 })
+        .limit(parsedLimit)
+        .select("topic mood anonymous wordCount reflectionSeconds createdAt userId jarCode")
+        .lean(),
+      Souljar.aggregate([
+        { $match: scopedFilter },
+        {
+          $group: {
+            _id: null,
+            avgReflectionSeconds: { $avg: "$reflectionSeconds" },
+            avgWordCount: { $avg: "$wordCount" },
+          },
+        },
+      ]),
+      Souljar.countDocuments({
+        ...scopedFilter,
+        $or: [
+          { imagePath: { $exists: true, $nin: [null, ""] } },
+          { "attachmentNames.0": { $exists: true } },
+        ],
+      }),
+      Souljar.countDocuments({ ...scopedFilter, anonymous: true }),
+    ]);
+
+    const categoryBreakdown = categoryBreakdownRaw.map((c) => ({
+      category: normalizeSouljarCategory(c._id),
+      count: c.count,
+      ratio: totalSince > 0 ? c.count / totalSince : 0,
+    }));
+
+    const moodByDay = {};
+    for (const row of moodTrendRaw) {
+      const date = row._id?.date;
+      const mood = String(row._id?.mood || "Unknown").trim() || "Unknown";
+      if (!date) continue;
+      moodByDay[date] ??= { _id: date, moods: {}, total: 0 };
+      moodByDay[date].moods[mood] = (moodByDay[date].moods[mood] || 0) + row.count;
+      moodByDay[date].total += row.count;
+    }
+
+    const heatmap = Array.from({ length: 24 }, (_, hour) => ({ hour, count: 0 }));
+    for (const row of heatmapRaw) {
+      const hour = Number(row._id?.hour);
+      if (Number.isInteger(hour) && hour >= 0 && hour < 24) {
+        heatmap[hour].count = row.count;
+      }
+    }
+
+    const uniqueUsers = uniqueUsersRaw.length;
+    const avgReflectionSeconds = Math.round(reflectionSummary[0]?.avgReflectionSeconds || 0);
+    const avgWordCount = Math.round(reflectionSummary[0]?.avgWordCount || 0);
+
+    res.json({
+      period,
+      filters: {
+        start: since.toISOString(),
+        end: until.toISOString(),
+        category: category ? String(category) : "All",
+        segment: normalizedSegment,
+      },
+      summary: {
+        totalAll,
+        totalSince,
+        dailyTotal,
+        weeklyTotal,
+        monthlyTotal,
+      },
+      participation: {
+        uniqueUsers,
+        entriesPerUser: uniqueUsers > 0 ? Number((totalSince / uniqueUsers).toFixed(2)) : 0,
+        anonymousShare: totalSince > 0 ? Number((anonymousCount / totalSince).toFixed(4)) : 0,
+        avgReflectionSeconds,
+        avgWordCount,
+        attachmentRate: totalSince > 0 ? Number((attachmentCount / totalSince).toFixed(4)) : 0,
+      },
+      categoryBreakdown,
+      submissionTrend,
+      moodTrend: Object.values(moodByDay),
+      hourlyHeatmap: heatmap,
+      recentActivity: recentRaw.map((entry) => ({
+        id: entry._id,
+        jarCode: entry.jarCode,
+        category: normalizeSouljarCategory(entry.topic),
+        mood: String(entry.mood || "Unknown").trim() || "Unknown",
+        anonymous: !!entry.anonymous,
+        actor: anonymizeUser(entry.userId, entry.anonymous),
+        wordCount: entry.wordCount || 0,
+        reflectionSeconds: entry.reflectionSeconds || 0,
+        createdAt: entry.createdAt,
       })),
     });
   } catch (err) {
