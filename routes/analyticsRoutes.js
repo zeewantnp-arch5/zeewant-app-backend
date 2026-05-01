@@ -646,7 +646,7 @@ router.get("/souljar", requireAdmin, requireAnalyticsAccess, async (req, res) =>
       Souljar.find(scopedFilter)
         .sort({ createdAt: -1 })
         .limit(parsedLimit)
-        .select("topic mood anonymous wordCount reflectionSeconds createdAt userId jarCode attachmentUrls")
+        .select("topic mood anonymous wordCount reflectionSeconds createdAt userId jarCode text ocrText attachmentUrls")
         .lean(),
       Souljar.aggregate([
         { $match: scopedFilter },
@@ -731,6 +731,8 @@ router.get("/souljar", requireAdmin, requireAnalyticsAccess, async (req, res) =>
         mood: String(entry.mood || "Unknown").trim() || "Unknown",
         anonymous: !!entry.anonymous,
         actor: anonymizeUser(entry.userId, entry.anonymous),
+        text: String(entry.text || "").trim(),
+        ocrText: String(entry.ocrText || "").trim(),
         wordCount: entry.wordCount || 0,
         reflectionSeconds: entry.reflectionSeconds || 0,
         createdAt: entry.createdAt,

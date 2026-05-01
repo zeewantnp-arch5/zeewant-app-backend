@@ -159,6 +159,8 @@ export async function emitSouljarAnalyticsUpdate(io, sourceDoc = null) {
           category: String(sourceDoc.topic || "Uncategorized"),
           mood: String(sourceDoc.mood || "Unknown"),
           anonymous: !!sourceDoc.anonymous,
+          text: String(sourceDoc.text || "").trim(),
+          ocrText: String(sourceDoc.ocrText || "").trim(),
           wordCount: sourceDoc.wordCount || 0,
           reflectionSeconds: sourceDoc.reflectionSeconds || 0,
           createdAt: sourceDoc.createdAt || new Date(),
