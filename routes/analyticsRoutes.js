@@ -644,6 +644,7 @@ router.get("/souljar", requireAdmin, requireAnalyticsAccess, async (req, res) =>
         $or: [
           { imagePath: { $exists: true, $nin: [null, ""] } },
           { "attachmentNames.0": { $exists: true } },
+          { "attachmentUrls.0": { $exists: true } },
         ],
       }),
       Souljar.countDocuments({ ...scopedFilter, anonymous: true }),
@@ -714,6 +715,7 @@ router.get("/souljar", requireAdmin, requireAnalyticsAccess, async (req, res) =>
         wordCount: entry.wordCount || 0,
         reflectionSeconds: entry.reflectionSeconds || 0,
         createdAt: entry.createdAt,
+        attachmentUrls: entry.attachmentUrls || [],
       })),
     });
   } catch (err) {

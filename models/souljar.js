@@ -34,6 +34,9 @@ const souljarSchema = new mongoose.Schema(
 
     attachmentNames: [String],
 
+    // Firebase Storage public download URLs for images & files
+    attachmentUrls: [String],
+
     wordCount: Number,
   },
   { timestamps: true }

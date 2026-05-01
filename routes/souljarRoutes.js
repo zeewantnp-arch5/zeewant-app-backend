@@ -136,6 +136,7 @@ router.post("/", async (req, res) => {
       ocrText,
       imagePath,
       attachmentNames,
+      attachmentUrls,
     } = req.body;
 
     if (!userId || !text) {
@@ -159,6 +160,7 @@ router.post("/", async (req, res) => {
       ocrText,
       imagePath,
       attachmentNames,
+      attachmentUrls: Array.isArray(attachmentUrls) ? attachmentUrls : [],
       wordCount: text ? text.trim().split(/\s+/).length : 0,
     });
 

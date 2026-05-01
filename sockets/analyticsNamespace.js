@@ -162,6 +162,7 @@ export async function emitSouljarAnalyticsUpdate(io, sourceDoc = null) {
           wordCount: sourceDoc.wordCount || 0,
           reflectionSeconds: sourceDoc.reflectionSeconds || 0,
           createdAt: sourceDoc.createdAt || new Date(),
+          attachmentUrls: sourceDoc.attachmentUrls || [],
         },
       };
       ns.to("analytics_room").emit("analytics_snapshot", liveEntry);
