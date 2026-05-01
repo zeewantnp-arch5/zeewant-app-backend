@@ -96,7 +96,16 @@ export default function createChatRoutes(io) {
   // ─── POST /api/chat/:roomId/messages — durable send path ───────────────────
   router.post("/:roomId/messages", async (req, res) => {
     try {
-      const { senderId, senderName, senderRole, text, type = "text", allowPending = false } = req.body;
+      const {
+        senderId,
+        senderName,
+        senderRole,
+        text,
+        type = "text",
+        callType = null,
+        allowPending = false,
+      } = req.body;
+
       if (!senderId || !senderRole || !String(text || "").trim()) {
         return res.status(400).json({ message: "senderId, senderRole, and text are required" });
       }
@@ -108,6 +117,7 @@ export default function createChatRoutes(io) {
         senderRole,
         text,
         type,
+        callType: callType || null,
         allowPending,
       });
 
@@ -118,19 +128,23 @@ export default function createChatRoutes(io) {
         message: payload,
       });
 
-      await createNotification(io, {
-        recipientUid,
-        recipientRole,
-        type: "new_message",
-        title: "New Message",
-        body: `${senderName || "Someone"} sent you a message`,
-        data: {
+      // Skip standard "New Message" push for missed-call entries — the caller
+      // already sends a dedicated FCM missed-call notification separately.
+      if (type !== "missed_call") {
+        await createNotification(io, {
+          recipientUid,
+          recipientRole,
           type: "new_message",
-          roomId: req.params.roomId,
-          senderId,
-          senderRole,
-        },
-      });
+          title: "New Message",
+          body: `${senderName || "Someone"} sent you a message`,
+          data: {
+            type: "new_message",
+            roomId: req.params.roomId,
+            senderId,
+            senderRole,
+          },
+        });
+      }
 
       res.status(201).json({ message: payload });
     } catch (err) {

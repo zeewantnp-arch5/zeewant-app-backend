@@ -96,6 +96,53 @@ export async function markMissedCallsNotified(callEventIds) {
   );
 }
 
+export async function markCallCancelled(callEventId) {
+  if (!callEventId) return null;
+  return CallEvent.findByIdAndUpdate(
+    callEventId,
+    { status: "cancelled", endedAt: new Date() },
+    { new: true }
+  );
+}
+
+export async function markCallsSeen(callEventIds) {
+  if (!Array.isArray(callEventIds) || callEventIds.length === 0) return;
+  await CallEvent.updateMany(
+    { _id: { $in: callEventIds } },
+    { $set: { seenAt: new Date() } }
+  );
+}
+
+export async function getCallHistory({ userId, limit = 20, skip = 0 }) {
+  if (!userId) return [];
+  return CallEvent.find({
+    $or: [{ callerId: userId }, { receiverId: userId }],
+  })
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limit)
+    .lean();
+}
+
+export async function getMissedCallsForUser({ userId, limit = 50 }) {
+  if (!userId) return [];
+  return CallEvent.find({
+    receiverId: userId,
+    status: "missed",
+  })
+    .sort({ createdAt: -1 })
+    .limit(limit)
+    .lean();
+}
+
+export async function getCallHistoryForRoom({ roomId, limit = 20 }) {
+  if (!roomId) return [];
+  return CallEvent.find({ roomId })
+    .sort({ createdAt: -1 })
+    .limit(limit)
+    .lean();
+}
+
 export function buildCallEventText({ status, callType, actorName }) {
   const typeLabel = callType === "video" ? "video" : "audio";
   const caller = actorName || "User";

@@ -11,9 +11,10 @@ const messageSchema = new mongoose.Schema(
     text: { type: String, default: "" },
     type: {
       type: String,
-      enum: ["text", "image", "video", "document", "audio", "system"],
+      enum: ["text", "image", "video", "document", "audio", "system", "missed_call"],
       default: "text",
     },
+    callType: { type: String, enum: ["audio", "video", null], default: null },
     attachmentUrl: { type: String, default: null },
     attachmentName: { type: String, default: null },
     attachmentMimeType: { type: String, default: null },

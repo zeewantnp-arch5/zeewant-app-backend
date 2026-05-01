@@ -16,6 +16,7 @@ export function serializeMessage(message) {
     recipientRole: message.recipientRole,
     text: message.text,
     type: message.type,
+    callType: message.callType || null,
     attachmentUrl: message.attachmentUrl || null,
     attachmentName: message.attachmentName || null,
     attachmentMimeType: message.attachmentMimeType || null,
@@ -65,6 +66,7 @@ export async function createPersistentMessage({
   senderRole,
   text,
   type = "text",
+  callType = null,
   attachment = null,
   allowPending = false,
 }) {
@@ -92,6 +94,7 @@ export async function createPersistentMessage({
     recipientRole,
     text: text || "",
     type,
+    callType: callType || null,
     attachmentUrl: attachment?.url || null,
     attachmentName: attachment?.name || null,
     attachmentMimeType: attachment?.mimeType || null,

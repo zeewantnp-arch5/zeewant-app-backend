@@ -15,6 +15,7 @@ import {
   markCallAccepted,
   markCallRejected,
   markCallEnded,
+  markCallCancelled,
   listPendingMissedCallsForUser,
   markMissedCallsNotified,
   buildCallEventText,
@@ -548,6 +549,123 @@ export function registerRealtimeServer(io) {
       }
 
       socket.to(roomId).emit("call_rejected", { rejectedBy: socket.data.userId });
+    });
+
+    // ── Jitsi Call Lifecycle ───────────────────────────────────────────────────
+    // Emitted by caller when they tap the call button and peer is online.
+    // Backend creates a CallEvent, checks actual online state, then routes
+    // the call_incoming event to the receiver's personal room.
+    socket.on("call_initiate", async ({ to, roomId, callerName, callerImage, isVideo, jitsiRoom }) => {
+      const callerId = socket.data.userId;
+      const callerRole = socket.data.role;
+
+      if (!callerId || !callerRole) {
+        return emitSocketError(socket, "Not authenticated. Call student_go_online or soultee_go_online first.");
+      }
+
+      if (!to || !roomId) {
+        return emitSocketError(socket, "to and roomId are required for call_initiate");
+      }
+
+      const receiverRole = callerRole === "student" ? "soultee" : "student";
+      const receiverRegistry = receiverRole === "student" ? studentSocketsByUid : soulteeSocketsByUid;
+      const isReceiverOnline = isUserOnline(receiverRegistry, to);
+      const normalizedCallType = isVideo ? "video" : "audio";
+
+      try {
+        const callEvent = await createCallEvent({
+          roomId,
+          callerId,
+          callerRole,
+          callerName: callerName || socket.data.userName || callerId,
+          receiverId: to,
+          receiverRole,
+          callType: normalizedCallType,
+          status: isReceiverOnline ? "incoming" : "missed",
+          jitsiRoom: jitsiRoom || null,
+        });
+
+        if (!isReceiverOnline) {
+          // Race condition: caller's app showed peer as online but they went offline.
+          // Emit call_unavailable so CallingScreen can handle it.
+          return socket.emit("call_unavailable", {
+            roomId,
+            callType: normalizedCallType,
+            reason: "receiver_offline",
+            callEventId: String(callEvent._id),
+          });
+        }
+
+        io.to(buildPersonalRoom(receiverRole, to)).emit("call_incoming", {
+          roomId,
+          callerId,
+          callerName: callerName || socket.data.userName || callerId,
+          callerImage: callerImage || null,
+          callerRole,
+          isVideo,
+          jitsiRoom,
+          callEventId: String(callEvent._id),
+        });
+
+        socket.emit("call_initiated", {
+          callEventId: String(callEvent._id),
+        });
+      } catch (err) {
+        emitSocketError(socket, err.message);
+      }
+    });
+
+    // Emitted by the receiver when they tap Accept in the incoming call dialog.
+    socket.on("call_accepted", async ({ to, jitsiRoom, callEventId }) => {
+      const receiverRole = socket.data.role;
+      const callerRole = receiverRole === "student" ? "soultee" : "student";
+
+      try {
+        if (callEventId) await markCallAccepted(callEventId);
+      } catch (_) { /* non-fatal */ }
+
+      if (to) {
+        io.to(buildPersonalRoom(callerRole, to)).emit("call_accepted", {
+          from: socket.data.userId,
+          jitsiRoom,
+          callEventId,
+        });
+      }
+    });
+
+    // Emitted by the receiver when they tap Decline.
+    socket.on("call_rejected", async ({ to, jitsiRoom, callEventId }) => {
+      const receiverRole = socket.data.role;
+      const callerRole = receiverRole === "student" ? "soultee" : "student";
+
+      try {
+        if (callEventId) await markCallRejected(callEventId);
+      } catch (_) { /* non-fatal */ }
+
+      if (to) {
+        io.to(buildPersonalRoom(callerRole, to)).emit("call_rejected", {
+          from: socket.data.userId,
+          jitsiRoom,
+          callEventId,
+        });
+      }
+    });
+
+    // Emitted by the caller when they cancel from CallingScreen (or 30 s timeout).
+    socket.on("call_cancelled", async ({ to, jitsiRoom, callEventId }) => {
+      const callerRole = socket.data.role;
+      const receiverRole = callerRole === "student" ? "soultee" : "student";
+
+      try {
+        if (callEventId) await markCallCancelled(callEventId);
+      } catch (_) { /* non-fatal */ }
+
+      if (to) {
+        io.to(buildPersonalRoom(receiverRole, to)).emit("call_cancelled", {
+          from: socket.data.userId,
+          jitsiRoom,
+        });
+      }
     });
 
     // ── Question thread room — both student & soultee join to get live comments
