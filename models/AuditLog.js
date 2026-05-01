@@ -21,6 +21,7 @@ const auditLogSchema = new mongoose.Schema(
         "data_export", "report_generated",
         "security_alert_dismissed",
         "video_viewed", "document_viewed",
+        "souljar_deleted",
       ],
       required: true,
       index: true,

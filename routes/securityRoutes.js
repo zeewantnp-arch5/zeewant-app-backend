@@ -340,6 +340,53 @@ router.get("/session-audits", requireAdmin, async (req, res) => {
   }
 });
 
+// ── GET /api/security/session-audits/souljar-deletions ──────────────────────
+router.get("/session-audits/souljar-deletions", requireAdmin, async (req, res) => {
+  try {
+    const { page = 1, limit = 20, severity = "all" } = req.query;
+    const skip = (Number(page) - 1) * Number(limit);
+
+    const filter = { action: "souljar_deleted" };
+    if (severity !== "all") filter.severity = severity;
+
+    const [logs, total] = await Promise.all([
+      AuditLog.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(Number(limit))
+        .select("adminName adminRole action description severity resourceType resourceId resourceName metadata ipAddress userAgent createdAt")
+        .lean(),
+      AuditLog.countDocuments(filter),
+    ]);
+
+    res.json({
+      logs: logs.map((l, i) => ({
+        id: l._id,
+        auditId: `SJD-${String(total - i - skip).padStart(4, "0")}`,
+        adminName: l.adminName,
+        role: l.adminRole,
+        action: l.action,
+        description: l.description,
+        severity: l.severity,
+        resource: l.resourceType,
+        resourceId: l.resourceId,
+        jarCode: l.resourceName || "—",
+        topic: l.metadata?.get?.("topic") ?? l.metadata?.topic ?? "—",
+        attachmentCount:
+            l.metadata?.get?.("attachmentCount") ?? l.metadata?.attachmentCount ?? 0,
+        ip: l.ipAddress || "—",
+        device: _parseDevice(l.userAgent),
+        ts: l.createdAt,
+      })),
+      total,
+      page: Number(page),
+      limit: Number(limit),
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 // ── GET /api/security/privacy-requests ───────────────────────────────────────
 router.get("/privacy-requests", requireAdmin, async (req, res) => {
   try {

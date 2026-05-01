@@ -5,9 +5,11 @@ import Soultee from "../models/Soultee.js";
 import Session from "../models/Session.js";
 import Soulpana from "../models/Soulpana.js";
 import Souljar from "../models/souljar.js";
+import AuditLog from "../models/AuditLog.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import SoulteeApplication from "../models/SoulteeApplication.js";
 import admin from "../config/firebase.js";
+import { emitSouljarAnalyticsUpdate } from "../sockets/analyticsNamespace.js";
 
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
@@ -66,6 +68,22 @@ function normalizeSouljarCategory(topic = "") {
   return String(topic || "").trim() || "Uncategorized";
 }
 
+function extractStoragePathFromUrl(url) {
+  if (!url) return null;
+  try {
+    const parsed = new URL(String(url));
+    // Firebase download URL format: /v0/b/<bucket>/o/<encodedPath>
+    if (parsed.pathname.includes('/o/')) {
+      const encoded = parsed.pathname.split('/o/')[1] || '';
+      const decoded = decodeURIComponent(encoded);
+      return decoded || null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeSegment(rawSegment = "all") {
   const segment = String(rawSegment || "all").trim().toLowerCase();
   const allowed = new Set([
@@ -91,6 +109,7 @@ function segmentFilter(segment) {
         $or: [
           { imagePath: { $exists: true, $nin: [null, ""] } },
           { "attachmentNames.0": { $exists: true } },
+          { "attachmentUrls.0": { $exists: true } },
         ],
       };
     default:
@@ -627,7 +646,7 @@ router.get("/souljar", requireAdmin, requireAnalyticsAccess, async (req, res) =>
       Souljar.find(scopedFilter)
         .sort({ createdAt: -1 })
         .limit(parsedLimit)
-        .select("topic mood anonymous wordCount reflectionSeconds createdAt userId jarCode")
+        .select("topic mood anonymous wordCount reflectionSeconds createdAt userId jarCode attachmentUrls")
         .lean(),
       Souljar.aggregate([
         { $match: scopedFilter },
@@ -720,6 +739,98 @@ router.get("/souljar", requireAdmin, requireAnalyticsAccess, async (req, res) =>
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
+  }
+});
+
+// ── DELETE /api/analytics/souljar/:id ───────────────────────────────────────
+router.delete("/souljar/:id", requireAdmin, requireAnalyticsAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id) {
+      return res.status(400).json({ message: "Entry id is required" });
+    }
+
+    const deleted = await Souljar.findByIdAndDelete(id).lean();
+    if (!deleted) {
+      return res.status(404).json({ message: "Souljar entry not found" });
+    }
+
+    // Best-effort cleanup of files in Firebase Storage.
+    try {
+      if (admin.apps.length && Array.isArray(deleted.attachmentUrls)) {
+        const bucket = admin.storage().bucket();
+        await Promise.all(
+          deleted.attachmentUrls
+            .map((url) => extractStoragePathFromUrl(url))
+            .filter(Boolean)
+            .map(async (path) => {
+              try {
+                await bucket.file(path).delete({ ignoreNotFound: true });
+              } catch {
+                // Ignore storage cleanup failures to avoid blocking DB deletion
+              }
+            }),
+        );
+      }
+    } catch {
+      // Ignore cleanup wrapper failure
+    }
+
+    // Best-effort admin audit trail for delete operations.
+    try {
+      const adminId = String(
+        req.admin?.id || req.admin?._id || req.admin?.uid || req.admin?.username || "unknown"
+      );
+      const adminName = String(req.admin?.username || req.admin?.name || adminId);
+      const adminRole = String(req.admin?.role || "analyticsAdmin");
+      const ipAddress =
+        req.headers["x-forwarded-for"]?.toString().split(",")[0].trim() ||
+        req.socket?.remoteAddress ||
+        "";
+
+      await AuditLog.create({
+        adminId,
+        adminName,
+        adminRole,
+        action: "souljar_deleted",
+        resourceType: "system",
+        resourceId: String(deleted._id),
+        resourceName: String(deleted.jarCode || "Souljar Entry"),
+        description: `Deleted Souljar entry ${deleted.jarCode || deleted._id}`,
+        metadata: {
+          topic: deleted.topic || null,
+          anonymous: !!deleted.anonymous,
+          attachmentCount: Array.isArray(deleted.attachmentUrls)
+            ? deleted.attachmentUrls.length
+            : 0,
+        },
+        severity: "warn",
+        ipAddress,
+        userAgent: req.headers["user-agent"]?.toString() || "",
+      });
+    } catch (auditErr) {
+      console.warn("Audit log write failed:", auditErr.message);
+    }
+
+    const io = req.app.get("io");
+    if (io) {
+      io.of("/analytics").to("analytics_room").emit("analytics_snapshot", {
+        type: "souljar_deleted",
+        ts: Date.now(),
+        id: String(deleted._id),
+      });
+
+      emitSouljarAnalyticsUpdate(io).catch((err) => {
+        console.error("Souljar analytics emit after delete error:", err.message);
+      });
+    }
+
+    return res.json({
+      message: "Souljar entry deleted",
+      id: String(deleted._id),
+    });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
   }
 });
 
