@@ -81,6 +81,7 @@ app.use(express.static(join(__dirname, "public")));
 app.use("/uploads", express.static(join(__dirname, "uploads")));
 
 app.get("/", (req, res) => res.send("Zeewant Backend Running..."));
+app.get("/health", (req, res) => res.json({ status: "ok", ts: Date.now() }));
 
 const PORT = process.env.PORT || 5000;
 
@@ -91,6 +92,17 @@ async function startServer() {
 
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`🚀 Server running on port ${PORT}`);
+
+    // Render free tier sleeps after 15 min of inactivity.
+    // Ping own external URL every 14 min to stay awake.
+    const selfUrl = process.env.RENDER_EXTERNAL_URL;
+    if (selfUrl) {
+      setInterval(() => {
+        fetch(`${selfUrl}/health`)
+          .then(() => console.log("[keep-alive] ping ok"))
+          .catch((err) => console.warn("[keep-alive] ping failed:", err.message));
+      }, 14 * 60 * 1000);
+    }
   });
 }
 
