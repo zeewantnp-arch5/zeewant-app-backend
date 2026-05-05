@@ -74,6 +74,28 @@ router.post("/submit", async (req, res) => {
       }
     }
 
+    // Notify student themselves so the explore banner refreshes in real-time
+    try {
+      const studentNotif = await Notification.create({
+        recipientUid: userId,
+        recipientRole: "student",
+        type: "prescription_pending",
+        title: "Prescription Request Sent",
+        body: "Your Soultee is reviewing your request. We'll notify you when it's ready.",
+        data: { prescriptionId: String(doc._id) },
+      });
+      updateNotificationInRTDB(userId, String(studentNotif._id), {
+        type: studentNotif.type,
+        title: studentNotif.title,
+        body: studentNotif.body,
+        read: false,
+        createdAt: studentNotif.createdAt.toISOString(),
+        data: { prescriptionId: String(doc._id) },
+      });
+    } catch (notifErr) {
+      console.warn("[prescription] student notification error:", notifErr.message);
+    }
+
     return res.status(200).json({ id: doc._id, status: "pending", soulteeAssigned: !!soulteeUid });
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -171,15 +193,15 @@ router.put("/fulfill/:id", async (req, res) => {
 });
 
 // ── GET /api/emotional-prescription/history/:userId ───────────────────────────
-// Student views their prescriptions (only completed ones shown with full data)
+// Student views all their prescriptions (pending + completed)
 router.get("/history/:userId", async (req, res) => {
   try {
     const docs = await EmotionalPrescription.find(
-      { userId: req.params.userId, status: "completed" },
+      { userId: req.params.userId },
       { rawText: 0 }
     )
       .sort({ createdAt: -1 })
-      .limit(20)
+      .limit(50)
       .lean();
 
     return res.status(200).json(docs);
