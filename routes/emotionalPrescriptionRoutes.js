@@ -7,32 +7,32 @@ const router = express.Router();
 // ── POST /api/emotional-prescription/submit ───────────────────────────────────
 // Student submits form → saved as pending, routed to their linked soultee
 router.post("/submit", async (req, res) => {
-  const {
-    userId,
-    studentName = "",
-    age,
-    educationLevel,
-    problem,
-    emotionalState,
-    currentSituation,
-    moodData = {},
-    activityData = {},
-    stabilityScore = 0,
-  } = req.body;
-
-  if (!userId || !problem || !emotionalState || !currentSituation) {
-    return res.status(400).json({ error: "Missing required fields." });
-  }
-
-  // Find linked soultee
-  const link = await StudentSoulteeLink.findOne({
-    studentFirebaseUid: userId,
-    status: "active",
-  }).select("soulteeFirebaseUid").lean();
-
-  const soulteeUid = link?.soulteeFirebaseUid || "";
-
   try {
+    const {
+      userId,
+      studentName = "",
+      age,
+      educationLevel,
+      problem,
+      emotionalState,
+      currentSituation,
+      moodData = {},
+      activityData = {},
+      stabilityScore = 0,
+    } = req.body;
+
+    if (!userId || !problem || !emotionalState || !currentSituation) {
+      return res.status(400).json({ error: "Missing required fields." });
+    }
+
+    // Find linked soultee
+    const link = await StudentSoulteeLink.findOne({
+      studentFirebaseUid: userId,
+      status: "active",
+    }).select("soulteeFirebaseUid").lean();
+
+    const soulteeUid = link?.soulteeFirebaseUid || "";
+
     const doc = await EmotionalPrescription.create({
       userId,
       studentName,
