@@ -3,9 +3,8 @@ import EmotionalPrescription from "../models/EmotionalPrescription.js";
 
 const router = express.Router();
 
-// ── Anthropic config ───────────────────────────────────────────────────────────
-const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
-const MODEL = "claude-haiku-4-5-20251001";
+// ── Gemini config ─────────────────────────────────────────────────────────────
+const GEMINI_MODEL = "gemini-1.5-flash";
 
 const SYSTEM_PROMPT = `Act as an experienced Emotional Health Counsellor with 10+ years of working with students in Nepal.
 
@@ -72,9 +71,9 @@ router.post("/generate", async (req, res) => {
     return res.status(400).json({ error: "Missing required fields." });
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    return res.status(500).json({ error: "Anthropic API key not configured on server." });
+    return res.status(500).json({ error: "Gemini API key not configured on server." });
   }
 
   // Build user message
@@ -112,32 +111,28 @@ Current Situation:
 Please generate a full Emotional Prescription following the format in your instructions.`;
 
   try {
-    // Call Anthropic
-    const anthropicRes = await fetch(ANTHROPIC_URL, {
+    // Call Gemini
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+    const geminiRes = await fetch(geminiUrl, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 1500,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content: userMessage }],
+        system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        contents: [{ role: "user", parts: [{ text: userMessage }] }],
+        generationConfig: { maxOutputTokens: 1500 },
       }),
     });
 
-    if (anthropicRes.status === 401) {
-      return res.status(500).json({ error: "Invalid Anthropic API key on server." });
+    if (geminiRes.status === 400 || geminiRes.status === 403) {
+      return res.status(500).json({ error: "Invalid Gemini API key on server." });
     }
-    if (!anthropicRes.ok) {
-      const errBody = await anthropicRes.text();
-      return res.status(500).json({ error: `Anthropic error ${anthropicRes.status}: ${errBody}` });
+    if (!geminiRes.ok) {
+      const errBody = await geminiRes.text();
+      return res.status(500).json({ error: `Gemini error ${geminiRes.status}: ${errBody}` });
     }
 
-    const data = await anthropicRes.json();
-    const rawText = data.content[0].text;
+    const data = await geminiRes.json();
+    const rawText = data.candidates[0].content.parts[0].text;
 
     // Parse sections
     const parsed = parseRaw(rawText);
