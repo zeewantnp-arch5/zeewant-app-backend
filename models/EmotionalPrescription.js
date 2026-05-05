@@ -3,12 +3,20 @@ import mongoose from "mongoose";
 const emotionalPrescriptionSchema = new mongoose.Schema(
   {
     userId: {
-      type: String, // Firebase UID
+      type: String,
       required: true,
       index: true,
     },
+    studentName: { type: String, default: "" },
+    soulteeUid: { type: String, default: "", index: true },
+    status: {
+      type: String,
+      enum: ["pending", "completed"],
+      default: "pending",
+      index: true,
+    },
 
-    // ── Input ──────────────────────────────────────────────────────────────────
+    // ── Input (from student) ───────────────────────────────────────────────────
     input: {
       age: Number,
       educationLevel: String,
@@ -18,7 +26,7 @@ const emotionalPrescriptionSchema = new mongoose.Schema(
       stabilityScore: { type: Number, default: 0 },
     },
 
-    // ── Parsed output ──────────────────────────────────────────────────────────
+    // ── Prescription (filled by soultee) ──────────────────────────────────────
     emotionalDiagnosis: String,
     rootCause: String,
     dailyRx: String,
@@ -28,9 +36,7 @@ const emotionalPrescriptionSchema = new mongoose.Schema(
     mindsetShift: String,
     supportSuggestion: String,
     closingNote: String,
-
-    // Raw response from Claude
-    rawText: String,
+    rawText: { type: String, default: "" },
   },
   { timestamps: true }
 );

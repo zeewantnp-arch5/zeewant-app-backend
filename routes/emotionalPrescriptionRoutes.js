@@ -1,62 +1,15 @@
 import express from "express";
 import EmotionalPrescription from "../models/EmotionalPrescription.js";
+import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 
 const router = express.Router();
 
-// ── Gemini config ─────────────────────────────────────────────────────────────
-const GEMINI_MODEL = "gemini-1.5-flash-8b";
-
-const SYSTEM_PROMPT = `Act as an experienced Emotional Health Counsellor with 10+ years of working with students in Nepal.
-
-Based on the student's situation, generate a simple, warm, relatable Emotional Prescription.
-
-STRICT OUTPUT FORMAT — use these EXACT headers each followed by a colon on its own line:
-Emotional Diagnosis: [what they feel, normalize it in 2-3 sentences]
-Root Cause: [real underlying reason, 2-3 sentences]
-Daily Rx: [2-3 clear daily actions, numbered]
-Weekly Rx: [1-2 weekly habits, numbered]
-Emergency Rx: [one quick calming technique for crisis moments]
-What to Avoid: [2-3 behaviors/habits to avoid]
-Mindset Shift: [one powerful, memorable line to reframe their thinking]
-Support Suggestion: [who or what to lean on — people, activities, or resources]
-Closing Note: [2-3 warm, human sentences to close — like a caring daa/didi]
-
-STYLE RULES:
-- Simple English + light Nepali words where natural (e.g., "huncha", "bistaarai", "paagal nabhau")
-- Short, clear, supportive — no jargon
-- Culturally relevant to Nepal (family pressure, academic stress, society expectations)
-- Sound human, not clinical`;
-
-// ── Section parser (mirrors Flutter logic) ────────────────────────────────────
-function extractSection(text, header) {
-  const escaped = header.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(
-    `\\*{0,2}${escaped}\\*{0,2}\\s*:\\s*([\\s\\S]*?)(?=\\n\\s*\\*{0,2}[A-Z][^:\\n]{2,}\\*{0,2}\\s*:|$)`,
-    "i"
-  );
-  const match = text.match(pattern);
-  return match ? match[1].trim() : "";
-}
-
-function parseRaw(raw) {
-  return {
-    emotionalDiagnosis: extractSection(raw, "Emotional Diagnosis"),
-    rootCause: extractSection(raw, "Root Cause"),
-    dailyRx: extractSection(raw, "Daily Rx"),
-    weeklyRx: extractSection(raw, "Weekly Rx"),
-    emergencyRx: extractSection(raw, "Emergency Rx"),
-    whatToAvoid: extractSection(raw, "What to Avoid"),
-    mindsetShift: extractSection(raw, "Mindset Shift"),
-    supportSuggestion: extractSection(raw, "Support Suggestion"),
-    closingNote: extractSection(raw, "Closing Note"),
-    rawText: raw,
-  };
-}
-
-// ── POST /api/emotional-prescription/generate ─────────────────────────────────
-router.post("/generate", async (req, res) => {
+// ── POST /api/emotional-prescription/submit ───────────────────────────────────
+// Student submits form → saved as pending, routed to their linked soultee
+router.post("/submit", async (req, res) => {
   const {
     userId,
+    studentName = "",
     age,
     educationLevel,
     problem,
@@ -71,87 +24,93 @@ router.post("/generate", async (req, res) => {
     return res.status(400).json({ error: "Missing required fields." });
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ error: "Gemini API key not configured on server." });
-  }
+  // Find linked soultee
+  const link = await StudentSoulteeLink.findOne({
+    studentFirebaseUid: userId,
+    status: "active",
+  }).select("soulteeFirebaseUid").lean();
 
-  // Build user message
-  const moodSummary =
-    Object.keys(moodData).length === 0
-      ? "Not available"
-      : Object.entries(moodData)
-          .filter(([, v]) => Number(v) > 0)
-          .map(([k, v]) => `${k}: ${v}`)
-          .join(", ") || "Not available";
-
-  const triggerSummary =
-    Object.keys(activityData).length === 0
-      ? "Not available"
-      : Object.entries(activityData)
-          .filter(([, v]) => Number(v) > 0)
-          .slice(0, 3)
-          .map(([k]) => k)
-          .join(", ") || "Not available";
-
-  const userMessage = `Student Profile:
-- Age: ${age}
-- Education Level: ${educationLevel}
-- Current Emotional State: ${emotionalState}
-- Emotional Stability Score: ${stabilityScore}/100
-- Past Mood Pattern: ${moodSummary}
-- Known Triggers: ${triggerSummary}
-
-In their own words — Problem:
-"${problem}"
-
-Current Situation:
-"${currentSituation}"
-
-Please generate a full Emotional Prescription following the format in your instructions.`;
+  const soulteeUid = link?.soulteeFirebaseUid || "";
 
   try {
-    // Call Gemini
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
-    const geminiRes = await fetch(geminiUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        contents: [{ role: "user", parts: [{ text: userMessage }] }],
-        generationConfig: { maxOutputTokens: 1500 },
-      }),
-    });
-
-    if (geminiRes.status === 400 || geminiRes.status === 403) {
-      return res.status(500).json({ error: "Invalid Gemini API key on server." });
-    }
-    if (!geminiRes.ok) {
-      const errBody = await geminiRes.text();
-      return res.status(500).json({ error: `Gemini error ${geminiRes.status}: ${errBody}` });
-    }
-
-    const data = await geminiRes.json();
-    const rawText = data.candidates[0].content.parts[0].text;
-
-    // Parse sections
-    const parsed = parseRaw(rawText);
-
-    // Save to MongoDB
     const doc = await EmotionalPrescription.create({
       userId,
+      studentName,
+      soulteeUid,
+      status: "pending",
       input: { age, educationLevel, emotionalState, problem, currentSituation, stabilityScore },
-      ...parsed,
     });
 
-    return res.status(200).json({ id: doc._id, ...parsed });
+    return res.status(200).json({ id: doc._id, status: "pending", soulteeAssigned: !!soulteeUid });
   } catch (err) {
-    console.error("Emotional Prescription error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET /api/emotional-prescription/pending/:soulteeUid ───────────────────────
+// Soultee fetches pending requests from their students
+router.get("/pending/:soulteeUid", async (req, res) => {
+  try {
+    const docs = await EmotionalPrescription.find({
+      soulteeUid: req.params.soulteeUid,
+      status: "pending",
+    })
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
+
+    return res.status(200).json(docs);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── PUT /api/emotional-prescription/fulfill/:id ───────────────────────────────
+// Soultee fills and submits the prescription
+router.put("/fulfill/:id", async (req, res) => {
+  const {
+    emotionalDiagnosis,
+    rootCause,
+    dailyRx,
+    weeklyRx,
+    emergencyRx,
+    whatToAvoid,
+    mindsetShift,
+    supportSuggestion,
+    closingNote,
+  } = req.body;
+
+  if (!emotionalDiagnosis || !rootCause || !dailyRx) {
+    return res.status(400).json({ error: "emotionalDiagnosis, rootCause and dailyRx are required." });
+  }
+
+  try {
+    const doc = await EmotionalPrescription.findByIdAndUpdate(
+      req.params.id,
+      {
+        status: "completed",
+        emotionalDiagnosis,
+        rootCause,
+        dailyRx,
+        weeklyRx: weeklyRx || "",
+        emergencyRx: emergencyRx || "",
+        whatToAvoid: whatToAvoid || "",
+        mindsetShift: mindsetShift || "",
+        supportSuggestion: supportSuggestion || "",
+        closingNote: closingNote || "",
+      },
+      { new: true }
+    );
+
+    if (!doc) return res.status(404).json({ error: "Prescription not found." });
+    return res.status(200).json(doc);
+  } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
 
 // ── GET /api/emotional-prescription/history/:userId ───────────────────────────
+// Student views their prescriptions (only completed ones shown with full data)
 router.get("/history/:userId", async (req, res) => {
   try {
     const docs = await EmotionalPrescription.find(
@@ -159,7 +118,8 @@ router.get("/history/:userId", async (req, res) => {
       { rawText: 0 }
     )
       .sort({ createdAt: -1 })
-      .limit(20);
+      .limit(20)
+      .lean();
 
     return res.status(200).json(docs);
   } catch (err) {
