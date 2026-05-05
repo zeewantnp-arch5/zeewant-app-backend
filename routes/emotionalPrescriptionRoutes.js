@@ -153,7 +153,8 @@ router.put("/fulfill/:id", async (req, res) => {
         body: notif.body,
         read: false,
         createdAt: notif.createdAt.toISOString(),
-      });
+          data: { prescriptionId: String(doc._id) },
+        });
       sendPushNotification(doc.userId, {
         title: notif.title,
         body: notif.body,
