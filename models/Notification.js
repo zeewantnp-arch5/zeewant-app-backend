@@ -26,6 +26,8 @@ const notificationSchema = new mongoose.Schema(
         // Soulpost lifecycle
         "post_approved",                 // author receives: post approved & live (student or soultee)
         "post_rejected",                 // author receives: post rejected with reason (student or soultee)
+        // Emotional Prescription
+        "prescription_ready",            // student receives: soultee has filled their prescription
       ],
       required: true,
     },

@@ -1,6 +1,9 @@
 import express from "express";
 import EmotionalPrescription from "../models/EmotionalPrescription.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
+import Notification from "../models/Notification.js";
+import { updateNotificationInRTDB } from "../config/firebase.js";
+import { sendPushNotification } from "../services/fcmService.js";
 
 const router = express.Router();
 
@@ -103,6 +106,33 @@ router.put("/fulfill/:id", async (req, res) => {
     );
 
     if (!doc) return res.status(404).json({ error: "Prescription not found." });
+
+    // Notify student
+    try {
+      const notif = await Notification.create({
+        recipientUid: doc.userId,
+        recipientRole: "student",
+        type: "prescription_ready",
+        title: "Your Prescription is Ready 💊",
+        body: "Your Soultee has filled your emotional prescription. Tap to view it.",
+        data: { prescriptionId: String(doc._id) },
+      });
+      updateNotificationInRTDB(doc.userId, String(notif._id), {
+        type: notif.type,
+        title: notif.title,
+        body: notif.body,
+        read: false,
+        createdAt: notif.createdAt.toISOString(),
+      });
+      sendPushNotification(doc.userId, {
+        title: notif.title,
+        body: notif.body,
+        data: { prescriptionId: String(doc._id), type: "prescription_ready" },
+      });
+    } catch (notifErr) {
+      console.warn("[prescription] notification error:", notifErr.message);
+    }
+
     return res.status(200).json(doc);
   } catch (err) {
     return res.status(500).json({ error: err.message });
