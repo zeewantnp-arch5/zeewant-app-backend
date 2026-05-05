@@ -4,7 +4,7 @@ import EmotionalPrescription from "../models/EmotionalPrescription.js";
 const router = express.Router();
 
 // ── Gemini config ─────────────────────────────────────────────────────────────
-const GEMINI_MODEL = "gemini-1.5-flash";
+const GEMINI_MODEL = "gemini-2.0-flash";
 
 const SYSTEM_PROMPT = `Act as an experienced Emotional Health Counsellor with 10+ years of working with students in Nepal.
 
