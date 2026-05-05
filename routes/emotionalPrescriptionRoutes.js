@@ -44,6 +44,36 @@ router.post("/submit", async (req, res) => {
       input: { age, educationLevel, emotionalState, problem, currentSituation, stabilityScore },
     });
 
+    // Notify soultee in real-time
+    if (soulteeUid) {
+      try {
+        const displayName = studentName || "A student";
+        const notif = await Notification.create({
+          recipientUid: soulteeUid,
+          recipientRole: "soultee",
+          type: "prescription_request",
+          title: "New Prescription Request 📋",
+          body: `${displayName} has submitted an emotional prescription request.`,
+          data: { prescriptionId: String(doc._id), studentName: displayName },
+        });
+        updateNotificationInRTDB(soulteeUid, String(notif._id), {
+          type: notif.type,
+          title: notif.title,
+          body: notif.body,
+          read: false,
+          createdAt: notif.createdAt.toISOString(),
+          data: { prescriptionId: String(doc._id), studentName: displayName },
+        });
+        sendPushNotification(soulteeUid, {
+          title: notif.title,
+          body: notif.body,
+          data: { prescriptionId: String(doc._id), type: "prescription_request" },
+        });
+      } catch (notifErr) {
+        console.warn("[prescription] soultee notification error:", notifErr.message);
+      }
+    }
+
     return res.status(200).json({ id: doc._id, status: "pending", soulteeAssigned: !!soulteeUid });
   } catch (err) {
     return res.status(500).json({ error: err.message });

@@ -27,6 +27,7 @@ const notificationSchema = new mongoose.Schema(
         "post_approved",                 // author receives: post approved & live (student or soultee)
         "post_rejected",                 // author receives: post rejected with reason (student or soultee)
         // Emotional Prescription
+        "prescription_request",          // soultee receives: student has submitted a prescription request
         "prescription_ready",            // student receives: soultee has filled their prescription
       ],
       required: true,
