@@ -175,7 +175,7 @@ router.put("/fulfill/:id", async (req, res) => {
 router.get("/history/:userId", async (req, res) => {
   try {
     const docs = await EmotionalPrescription.find(
-      { userId: req.params.userId },
+      { userId: req.params.userId, status: "completed" },
       { rawText: 0 }
     )
       .sort({ createdAt: -1 })
