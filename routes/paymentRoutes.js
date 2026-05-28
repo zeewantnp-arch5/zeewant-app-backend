@@ -418,4 +418,79 @@ router.get("/verify/:transactionUuid", async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  ESEWA — Recovery: re-verify a pending payment using eSewa API
+// ─────────────────────────────────────────────────────────────────────────────
+
+// POST /api/payments/esewa/recover
+// Body: { transactionUuid }
+// Called from the Flutter "Check My Payment" button on the failure screen.
+// Verifies the pending payment with eSewa using Method 2 (productId + amount)
+// and activates the subscription if COMPLETE.
+router.post("/esewa/recover", async (req, res) => {
+  try {
+    const { transactionUuid } = req.body;
+    if (!transactionUuid) {
+      return res.status(400).json({ message: "transactionUuid is required" });
+    }
+
+    const payment = await Payment.findOne({
+      transactionUuid,
+      method: "esewa",
+      status: "pending",
+    });
+
+    if (!payment) {
+      // Check if already completed — return success so Flutter unblocks
+      const done = await Payment.findOne({ transactionUuid, status: "completed" });
+      if (done) return res.json({ success: true, message: "Already activated" });
+      return res.status(404).json({ message: "Payment not found" });
+    }
+
+    // Verify with eSewa using Method 2: productId + amount
+    const isTest = !(process.env.ESEWA_BASE_URL || "").includes("epay.esewa.com.np");
+    const verifyBase = isTest ? "https://rc.esewa.com.np" : "https://esewa.com.np";
+    const url = `${verifyBase}/mobile/transaction?productId=${encodeURIComponent(transactionUuid)}&amount=${payment.amount}`;
+
+    const verifyRes = await fetch(url);
+
+    if (!verifyRes.ok) {
+      return res.status(400).json({
+        message: `eSewa verification failed (${verifyRes.status}). If money was deducted contact support.`,
+      });
+    }
+
+    const verifyData = await verifyRes.json();
+    const entry = Array.isArray(verifyData) ? verifyData[0] : verifyData;
+    const txnDetails = entry?.transactionDetails;
+
+    if (txnDetails?.status !== "COMPLETE" || entry?.code !== "00") {
+      return res.status(400).json({
+        message: "eSewa payment not confirmed as COMPLETE.",
+        status: txnDetails?.status,
+      });
+    }
+
+    const updated = await Payment.findOneAndUpdate(
+      { transactionUuid, status: "pending" },
+      {
+        status: "completed",
+        gatewayTransactionId: txnDetails.referenceId || "",
+        gatewayResponse: entry,
+        verifiedAt: new Date(),
+      },
+      { new: true }
+    );
+
+    if (!updated) {
+      return res.json({ success: true, message: "Already activated" });
+    }
+
+    await activateSubscription(updated);
+    res.json({ success: true, message: "Subscription activated via recovery" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 export default router;

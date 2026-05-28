@@ -35,6 +35,7 @@ import callRoutes from "./routes/callRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
 import subscriptionRoutes from "./routes/subscriptionRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
+import { runSubscriptionExpiryJob } from "./services/subscriptionExpiryService.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -95,6 +96,10 @@ async function startServer() {
   await SystemSettings.ensureDefaults();
   await SubscriptionPlan.ensureDefaults();
   await resetRealtimePresenceState();
+
+  // Run subscription expiry job immediately on startup, then every 6 hours
+  runSubscriptionExpiryJob();
+  setInterval(runSubscriptionExpiryJob, 6 * 60 * 60 * 1000);
 
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`🚀 Server running on port ${PORT}`);

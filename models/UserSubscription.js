@@ -22,6 +22,9 @@ const userSubscriptionSchema = new mongoose.Schema(
     transactionId: { type: String, default: null },
     paymentMethod: { type: String, enum: ["esewa", "khalti"], required: true },
     amountPaid: { type: Number, required: true },
+    // Notification tracking — prevents duplicate alerts
+    warningSentAt: { type: Date, default: null },      // 24-hr expiry warning sent
+    expiredNotifiedAt: { type: Date, default: null },   // post-expiry notification sent
   },
   { timestamps: true }
 );
