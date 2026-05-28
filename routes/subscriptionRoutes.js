@@ -15,13 +15,20 @@ router.get("/plans", async (_req, res) => {
   }
 });
 
-// ─── GET /api/subscriptions/status/:userId ────────────────────────────────────
-// Returns active subscription for a user, or null if none
+// ─── GET /api/subscriptions/status/:userId?soulteeId=<uid> ───────────────────
+// Returns active subscription for a specific student-soultee pair, or null.
+// soulteeId is required — subscription is per pair, not global.
 router.get("/status/:userId", async (req, res) => {
   try {
+    const { soulteeId } = req.query;
+    if (!soulteeId) {
+      return res.status(400).json({ message: "soulteeId query parameter is required" });
+    }
+
     const now = new Date();
     const subscription = await UserSubscription.findOne({
       userId: req.params.userId,
+      soulteeId,
       status: "active",
       expiryDate: { $gt: now },
     })

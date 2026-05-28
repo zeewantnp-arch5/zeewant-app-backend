@@ -2,7 +2,8 @@ import mongoose from "mongoose";
 
 const paymentSchema = new mongoose.Schema(
   {
-    userId: { type: String, required: true, index: true }, // Firebase UID
+    userId:    { type: String, required: true, index: true }, // student Firebase UID
+    soulteeId: { type: String, required: true, index: true }, // soultee Firebase UID
     planId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "SubscriptionPlan",

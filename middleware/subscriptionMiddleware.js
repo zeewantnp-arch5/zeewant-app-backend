@@ -1,13 +1,19 @@
+import mongoose from "mongoose";
 import UserSubscription from "../models/UserSubscription.js";
+import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 
 /**
- * Middleware: block students who lack an active subscription.
+ * Middleware: block students who lack an active subscription for the specific
+ * student-soultee pair being accessed.
+ *
  * Soultees bypass this check — they never need to pay to respond.
  *
- * Reads userId/userRole from:
- *   req.body   (POST routes — senderId / senderRole)
- *   req.query  (GET routes — userId / userRole)
- *   req.params (param-based routes — userUid, with userRole in query)
+ * soulteeId resolution order:
+ *   1. req.params.roomId  → look up StudentSoulteeLink.soulteeFirebaseUid
+ *   2. req.body.soulteeId / req.query.soulteeId (fallback)
+ *
+ * userId resolution order:
+ *   req.body.senderId → req.query.userId → req.params.userUid / userId
  */
 export async function requireSubscription(req, res, next) {
   try {
@@ -32,16 +38,44 @@ export async function requireSubscription(req, res, next) {
       });
     }
 
+    // Resolve soulteeId — prefer room lookup so client doesn't have to send it
+    let soulteeId =
+      req.body.soulteeId ||
+      req.query.soulteeId;
+
+    if (!soulteeId && req.params.roomId) {
+      try {
+        const isValidObjectId = mongoose.Types.ObjectId.isValid(req.params.roomId);
+        if (isValidObjectId) {
+          const link = await StudentSoulteeLink
+            .findById(req.params.roomId)
+            .select("soulteeFirebaseUid")
+            .lean();
+          soulteeId = link?.soulteeFirebaseUid;
+        }
+      } catch {
+        // Non-fatal — subscription check will fail below if soulteeId is still missing
+      }
+    }
+
+    if (!soulteeId) {
+      return res.status(400).json({
+        message: "soulteeId could not be resolved for this request",
+        code: "MISSING_SOULTEE_ID",
+      });
+    }
+
     const now = new Date();
     const subscription = await UserSubscription.findOne({
       userId,
+      soulteeId,
       status: "active",
       expiryDate: { $gt: now },
     }).lean();
 
     if (!subscription) {
       return res.status(403).json({
-        message: "An active subscription is required to access chat",
+        message: "An active subscription is required to chat with this Soultee",
         code: "SUBSCRIPTION_REQUIRED",
       });
     }

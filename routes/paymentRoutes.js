@@ -21,6 +21,7 @@ async function activateSubscription(payment) {
 
   await UserSubscription.create({
     userId: payment.userId,
+    soulteeId: payment.soulteeId,
     planId: payment.planId,
     planName: payment.planName,
     paymentId: payment._id,
@@ -113,13 +114,13 @@ async function reconcileKhaltiPayment(payment) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // POST /api/payments/initiate
-// Body: { userId, planName, method: 'esewa' | 'khalti' }
+// Body: { userId, soulteeId, planName, method: 'esewa' | 'khalti' }
 // Returns payment URL / form params for the client to open
 router.post("/initiate", async (req, res) => {
   try {
-    const { userId, planName, method } = req.body;
-    if (!userId || !planName || !method) {
-      return res.status(400).json({ message: "userId, planName, and method are required" });
+    const { userId, soulteeId, planName, method } = req.body;
+    if (!userId || !soulteeId || !planName || !method) {
+      return res.status(400).json({ message: "userId, soulteeId, planName, and method are required" });
     }
     if (!["esewa", "khalti"].includes(method)) {
       return res.status(400).json({ message: "method must be 'esewa' or 'khalti'" });
@@ -133,6 +134,7 @@ router.post("/initiate", async (req, res) => {
 
     const payment = await Payment.create({
       userId,
+      soulteeId,
       planId: plan._id,
       planName: plan.name,
       amount: plan.price,

@@ -2,7 +2,8 @@ import mongoose from "mongoose";
 
 const userSubscriptionSchema = new mongoose.Schema(
   {
-    userId: { type: String, required: true, index: true }, // Firebase UID
+    userId:    { type: String, required: true, index: true }, // student Firebase UID
+    soulteeId: { type: String, required: true, index: true }, // soultee Firebase UID
     userRole: { type: String, enum: ["student", "soultee"], default: "student" },
     planId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -29,6 +30,6 @@ const userSubscriptionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-userSubscriptionSchema.index({ userId: 1, status: 1, expiryDate: -1 });
+userSubscriptionSchema.index({ userId: 1, soulteeId: 1, status: 1, expiryDate: -1 });
 
 export default mongoose.model("UserSubscription", userSubscriptionSchema);
