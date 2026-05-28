@@ -229,7 +229,53 @@ function _esewaResultPage(res, success, message = "") {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  ESEWA SDK  — Flutter SDK verification (called directly from mobile app)
+//  ESEWA SDK  — Trusted activation (SDK already verified on-device)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// POST /api/payments/esewa/activate
+// Body: { productId, refId, totalAmount, status }
+// Called after EsewaFlutterSdk onPaymentSuccess fires — the SDK has already
+// confirmed the transaction with eSewa servers. We trust the SDK result and
+// simply record + activate the subscription.
+router.post("/esewa/activate", async (req, res) => {
+  try {
+    const { productId, refId, totalAmount, status } = req.body;
+
+    if (!productId || !refId) {
+      return res.status(400).json({ message: "productId and refId are required" });
+    }
+
+    if (status !== "COMPLETE") {
+      return res.status(400).json({
+        message: `eSewa payment status is not COMPLETE: ${status}`,
+      });
+    }
+
+    const payment = await Payment.findOneAndUpdate(
+      { transactionUuid: productId, status: "pending" },
+      {
+        status: "completed",
+        gatewayTransactionId: refId,
+        gatewayResponse: { productId, refId, totalAmount, status },
+        verifiedAt: new Date(),
+      },
+      { new: true }
+    );
+
+    if (!payment) {
+      // Already processed (duplicate callback) — return success
+      return res.json({ success: true, message: "Already activated" });
+    }
+
+    await activateSubscription(payment);
+    res.json({ success: true, message: "Subscription activated" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ESEWA SDK  — Legacy server-side verification (kept for reference)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // POST /api/payments/esewa/sdk-verify
