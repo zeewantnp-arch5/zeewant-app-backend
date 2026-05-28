@@ -3,7 +3,7 @@ import { sendPushNotification } from "./fcmService.js";
 
 /**
  * Runs the full subscription lifecycle job:
- *  1. Sends a 1-day warning to subscriptions expiring in the next 24 hours.
+ *  1. Sends a 2-day warning to subscriptions expiring in the next 48 hours.
  *  2. Marks subscriptions past their expiryDate as 'expired' and notifies the user.
  *
  * Safe to call repeatedly — each step is idempotent.
@@ -22,37 +22,38 @@ export async function runSubscriptionExpiryJob() {
   console.log("[subscription-expiry] Job finished.");
 }
 
-// ── 1-day warning ─────────────────────────────────────────────────────────────
+// ── 2-day warning ─────────────────────────────────────────────────────────────
 
 async function _sendExpiryWarnings(now) {
-  const in24h = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  const in48h = new Date(now.getTime() + 48 * 60 * 60 * 1000);
 
-  // Find active subscriptions expiring within the next 24 hours
-  // that have NOT had a warning sent yet (track via a flag we'll add inline)
+  // Find active subscriptions expiring within the next 48 hours
+  // that have NOT had a warning sent yet — idempotent via warningSentAt flag
   const expiringSoon = await UserSubscription.find({
     status: "active",
-    expiryDate: { $gt: now, $lte: in24h },
-    warningSentAt: { $exists: false }, // only once
+    expiryDate: { $gt: now, $lte: in48h },
+    warningSentAt: { $exists: false },
   }).lean();
 
   if (!expiringSoon.length) return;
 
-  console.log(`[subscription-expiry] Sending warning to ${expiringSoon.length} user(s)`);
+  console.log(`[subscription-expiry] Sending 2-day warning to ${expiringSoon.length} user(s)`);
 
   await Promise.allSettled(
     expiringSoon.map(async (sub) => {
-      const hoursLeft = Math.max(
-        0,
-        Math.round((sub.expiryDate - now) / (60 * 60 * 1000))
+      const daysLeft = Math.max(
+        1,
+        Math.round((sub.expiryDate - now) / (24 * 60 * 60 * 1000))
       );
 
       await sendPushNotification(sub.userId, {
         title: "⚠️ Subscription Expiring Soon",
-        body: `Your Zeewant ${sub.planName} plan expires in ${hoursLeft} hour${hoursLeft !== 1 ? "s" : ""}. Renew now to keep chatting!`,
+        body: `Your ${sub.planName} plan will expire in ${daysLeft} day${daysLeft !== 1 ? "s" : ""}. Renew now to continue uninterrupted chat access.`,
         data: {
           type: "subscription_expiring",
           planName: sub.planName,
           expiryDate: sub.expiryDate.toISOString(),
+          screen: "subscription",
         },
       });
 

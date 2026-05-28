@@ -18,15 +18,12 @@ const subscriptionPlanSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Seed default plans if none exist
+// Upsert default plans — always runs so price/feature changes take effect on restart.
 subscriptionPlanSchema.statics.ensureDefaults = async function () {
-  const count = await this.countDocuments();
-  if (count > 0) return;
-
-  await this.insertMany([
+  const defaults = [
     {
       name: "normal",
-      displayName: "Normal Plan",
+      displayName: "Normal",
       price: 250,
       durationDays: 30,
       isPopular: false,
@@ -39,7 +36,7 @@ subscriptionPlanSchema.statics.ensureDefaults = async function () {
     },
     {
       name: "pro",
-      displayName: "Pro Plan",
+      displayName: "Pro",
       price: 300,
       durationDays: 30,
       isPopular: true,
@@ -53,7 +50,7 @@ subscriptionPlanSchema.statics.ensureDefaults = async function () {
     },
     {
       name: "advanced",
-      displayName: "Advanced Plan",
+      displayName: "Advanced",
       price: 500,
       durationDays: 30,
       isPopular: false,
@@ -66,7 +63,17 @@ subscriptionPlanSchema.statics.ensureDefaults = async function () {
         "24/7 premium support",
       ],
     },
-  ]);
+  ];
+
+  await Promise.all(
+    defaults.map((plan) =>
+      this.updateOne(
+        { name: plan.name },
+        { $set: plan },
+        { upsert: true }
+      )
+    )
+  );
 };
 
 export default mongoose.model("SubscriptionPlan", subscriptionPlanSchema);

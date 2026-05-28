@@ -56,7 +56,7 @@ export default function createChatRoutes(io) {
   });
 
   // ─── GET /api/chat/:roomId  — message history (newest last) ────────────────
-  router.get("/:roomId", async (req, res) => {
+  router.get("/:roomId", requireSubscription, async (req, res) => {
     try {
       const page = Math.max(1, parseInt(req.query.page) || 1);
       const limit = Math.min(100, parseInt(req.query.limit) || 50);

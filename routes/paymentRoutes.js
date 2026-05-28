@@ -5,6 +5,7 @@ import SubscriptionPlan from "../models/SubscriptionPlan.js";
 import UserSubscription from "../models/UserSubscription.js";
 import { buildEsewaFormParams, verifyEsewaCallback } from "../services/esewaService.js";
 import { initiateKhaltiPayment, verifyKhaltiPayment } from "../services/khaltiService.js";
+import { sendPushNotification } from "../services/fcmService.js";
 
 const router = express.Router();
 
@@ -30,6 +31,24 @@ async function activateSubscription(payment) {
     startDate,
     expiryDate,
   });
+
+  // Notify user of successful subscription activation
+  const planDisplay = plan?.displayName ?? payment.planName;
+  const expiryStr = expiryDate.toLocaleDateString("en-US", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+  sendPushNotification(payment.userId, {
+    title: "✅ Subscription Activated",
+    body: `Your ${planDisplay} plan is now active. Chat access granted until ${expiryStr}.`,
+    data: {
+      type: "subscription_activated",
+      planName: payment.planName,
+      expiryDate: expiryDate.toISOString(),
+      screen: "chat",
+    },
+  }).catch(() => {}); // non-blocking — don't fail activation if FCM errors
 }
 
 const KHALTI_SUCCESS_STATUSES = new Set(["Completed"]);
