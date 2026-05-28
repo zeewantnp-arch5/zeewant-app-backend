@@ -5,6 +5,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
 import { buildPersonalRoom, createNotification } from "../services/notificationService.js";
+import { requireSubscription } from "../middleware/subscriptionMiddleware.js";
 import {
   createPersistentMessage,
   getRoomLinkForParticipant,
@@ -94,7 +95,7 @@ export default function createChatRoutes(io) {
   });
 
   // ─── POST /api/chat/:roomId/messages — durable send path ───────────────────
-  router.post("/:roomId/messages", async (req, res) => {
+  router.post("/:roomId/messages", requireSubscription, async (req, res) => {
     try {
       const {
         senderId,
@@ -154,7 +155,7 @@ export default function createChatRoutes(io) {
   });
 
   // ─── POST /api/chat/:roomId/attachments — upload + send media/file message ─
-  router.post("/:roomId/attachments", attachmentUpload.single("file"), async (req, res) => {
+  router.post("/:roomId/attachments", requireSubscription, attachmentUpload.single("file"), async (req, res) => {
     try {
       const { senderId, senderName, senderRole, type = "document", text = "", allowPending = false } =
         req.body;

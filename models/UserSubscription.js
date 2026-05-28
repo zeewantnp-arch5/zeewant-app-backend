@@ -1,0 +1,31 @@
+import mongoose from "mongoose";
+
+const userSubscriptionSchema = new mongoose.Schema(
+  {
+    userId: { type: String, required: true, index: true }, // Firebase UID
+    userRole: { type: String, enum: ["student", "soultee"], default: "student" },
+    planId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "SubscriptionPlan",
+      required: true,
+    },
+    planName: { type: String, enum: ["normal", "pro", "advanced"], required: true },
+    status: {
+      type: String,
+      enum: ["active", "expired", "cancelled"],
+      default: "active",
+      index: true,
+    },
+    startDate: { type: Date, default: Date.now },
+    expiryDate: { type: Date, required: true },
+    paymentId: { type: mongoose.Schema.Types.ObjectId, ref: "Payment" },
+    transactionId: { type: String, default: null },
+    paymentMethod: { type: String, enum: ["esewa", "khalti"], required: true },
+    amountPaid: { type: Number, required: true },
+  },
+  { timestamps: true }
+);
+
+userSubscriptionSchema.index({ userId: 1, status: 1, expiryDate: -1 });
+
+export default mongoose.model("UserSubscription", userSubscriptionSchema);

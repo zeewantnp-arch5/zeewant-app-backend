@@ -17,6 +17,7 @@ import notificationRoutes from "./routes/notificationRoutes.js";
 import otpRoutes from "./routes/otpRoutes.js";
 import createSoulteeApplicationRoutes from "./routes/soulteeApplicationRoutes.js";
 import SystemSettings from "./models/SystemSettings.js";
+import SubscriptionPlan from "./models/SubscriptionPlan.js";
 import "./config/firebase.js"; // initialise Firebase Admin on startup
 import { registerRealtimeServer, resetRealtimePresenceState } from "./sockets/realtimeServer.js";
 import analyticsRoutes from "./routes/analyticsRoutes.js";
@@ -32,6 +33,8 @@ import emotionalPrescriptionRoutes from "./routes/emotionalPrescriptionRoutes.js
 import soulMeterRoutes from "./routes/soulMeterRoutes.js";
 import callRoutes from "./routes/callRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
+import subscriptionRoutes from "./routes/subscriptionRoutes.js";
+import paymentRoutes from "./routes/paymentRoutes.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -77,6 +80,8 @@ app.use("/api/emotional-prescription", emotionalPrescriptionRoutes);
 app.use("/api/soulmeter",            soulMeterRoutes);
 app.use("/api/calls",                callRoutes);
 app.use("/api/auth",                 authRoutes);
+app.use("/api/subscriptions",        subscriptionRoutes);
+app.use("/api/payments",             paymentRoutes);
 app.use(express.static(join(__dirname, "public")));
 app.use("/uploads", express.static(join(__dirname, "uploads")));
 
@@ -88,6 +93,7 @@ const PORT = process.env.PORT || 5000;
 async function startServer() {
   await connectDB();
   await SystemSettings.ensureDefaults();
+  await SubscriptionPlan.ensureDefaults();
   await resetRealtimePresenceState();
 
   httpServer.listen(PORT, "0.0.0.0", () => {
