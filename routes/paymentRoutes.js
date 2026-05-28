@@ -52,7 +52,8 @@ router.post("/initiate", async (req, res) => {
     const plan = await SubscriptionPlan.findOne({ name: planName, isActive: true }).lean();
     if (!plan) return res.status(404).json({ message: "Plan not found" });
 
-    const transactionUuid = crypto.randomUUID();
+    // eSewa productId has a length limit — use 12-char hex instead of full UUID
+    const transactionUuid = crypto.randomBytes(6).toString('hex'); // e.g. "a3f9c2d1b04e"
 
     const payment = await Payment.create({
       userId,
@@ -226,6 +227,78 @@ function _esewaResultPage(res, success, message = "") {
 </body>
 </html>`);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ESEWA SDK  — Flutter SDK verification (called directly from mobile app)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// POST /api/payments/esewa/sdk-verify
+// Body: { productId (= our transactionUuid), refId, totalAmount }
+// Called by the Flutter app after EsewaFlutterSdk.initPayment() onPaymentSuccess fires.
+//
+// eSewa verification API (Method 1 — by refId):
+//   GET https://rc.esewa.com.np/mobile/transaction?txnRefId={refId}   (test)
+//   GET https://esewa.com.np/mobile/transaction?txnRefId={refId}       (live)
+//
+// Success response (array):
+//   [{ code: "00", transactionDetails: { status: "COMPLETE", referenceId, date } }]
+router.post("/esewa/sdk-verify", async (req, res) => {
+  try {
+    const { productId, refId, totalAmount } = req.body;
+    if (!productId || !refId) {
+      return res.status(400).json({ message: "productId and refId are required" });
+    }
+
+    // Choose base URL: test if ESEWA_BASE_URL contains 'rc-epay', live otherwise
+    const isTest = !(process.env.ESEWA_BASE_URL || "").includes("epay.esewa.com.np");
+    const verifyBase = isTest ? "https://rc.esewa.com.np" : "https://esewa.com.np";
+
+    // Method 1: verify by refId (referenceId from SDK success result)
+    const verifyUrl = `${verifyBase}/mobile/transaction?txnRefId=${encodeURIComponent(refId)}`;
+    const verifyRes = await fetch(verifyUrl);
+
+    if (!verifyRes.ok) {
+      return res.status(400).json({ message: `eSewa verification call failed (${verifyRes.status})` });
+    }
+
+    // Response is always an array
+    const verifyData = await verifyRes.json();
+    const entry = Array.isArray(verifyData) ? verifyData[0] : verifyData;
+    const txnDetails = entry?.transactionDetails;
+    const code = entry?.code;
+
+    // Require both status COMPLETE AND code "00"
+    if (txnDetails?.status !== "COMPLETE" || code !== "00") {
+      return res.status(400).json({
+        message: "Transaction verification failed",
+        status: txnDetails?.status,
+        code,
+      });
+    }
+
+    // Mark payment complete and activate subscription
+    const payment = await Payment.findOneAndUpdate(
+      { transactionUuid: productId, status: "pending" },
+      {
+        status: "completed",
+        gatewayTransactionId: refId,
+        gatewayResponse: entry,
+        verifiedAt: new Date(),
+      },
+      { new: true }
+    );
+
+    if (!payment) {
+      // Already processed (duplicate callback) — still return success
+      return res.json({ success: true, message: "Already activated" });
+    }
+
+    await activateSubscription(payment);
+    res.json({ success: true, message: "Subscription activated" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  KHALTI  — callback
