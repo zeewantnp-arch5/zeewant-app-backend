@@ -32,6 +32,63 @@ async function activateSubscription(payment) {
   });
 }
 
+const KHALTI_SUCCESS_STATUSES = new Set(["Completed"]);
+const KHALTI_FAILED_STATUSES = new Set([
+  "User canceled",
+  "Expired",
+  "Refunded",
+  "Partially Refunded",
+  "Partially refunded",
+]);
+
+async function reconcileKhaltiPayment(payment) {
+  if (!payment?.khaltiPidx) {
+    return { status: payment?.status || "pending" };
+  }
+
+  const lookup = await verifyKhaltiPayment(payment.khaltiPidx);
+  const khaltiStatus = lookup?.status;
+
+  if (KHALTI_SUCCESS_STATUSES.has(khaltiStatus)) {
+    const completedPayment = await Payment.findOneAndUpdate(
+      { _id: payment._id, status: "pending" },
+      {
+        status: "completed",
+        gatewayTransactionId: lookup.transaction_id,
+        khaltiPidx: payment.khaltiPidx,
+        gatewayResponse: lookup,
+        verifiedAt: new Date(),
+      },
+      { new: true }
+    );
+
+    if (completedPayment) {
+      await activateSubscription(completedPayment);
+      return { status: "completed", payment: completedPayment, lookup };
+    }
+
+    return { status: "completed", payment, lookup };
+  }
+
+  if (KHALTI_FAILED_STATUSES.has(khaltiStatus)) {
+    const failedPayment = await Payment.findOneAndUpdate(
+      { _id: payment._id, status: "pending" },
+      {
+        status: "failed",
+        gatewayResponse: lookup,
+        verifiedAt: new Date(),
+      },
+      { new: true }
+    );
+
+    return { status: failedPayment?.status || payment.status, payment: failedPayment || payment, lookup };
+  }
+
+  // Keep pending for statuses like Pending/Initiated/Refunded/Partially Refunded.
+  await Payment.findByIdAndUpdate(payment._id, { gatewayResponse: lookup });
+  return { status: "pending", payment, lookup };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  INITIATION
 // ─────────────────────────────────────────────────────────────────────────────
@@ -353,36 +410,44 @@ router.post("/esewa/sdk-verify", async (req, res) => {
 // GET /api/payments/khalti/callback?pidx=...&status=...&purchase_order_id=...
 router.get("/khalti/callback", async (req, res) => {
   try {
-    const { pidx, status, purchase_order_id: transactionUuid } = req.query;
-    if (!pidx || status !== "Completed") {
-      await Payment.findOneAndUpdate(
-        { transactionUuid, status: "pending" },
-        { status: "failed", gatewayResponse: req.query }
-      );
-      return _khaltiResultPage(res, false, "Payment was cancelled or not completed.");
+    const { pidx, purchase_order_id: transactionUuid } = req.query;
+    if (!pidx) {
+      return _khaltiResultPage(res, false, "Missing pidx in Khalti callback.");
     }
 
-    const lookup = await verifyKhaltiPayment(pidx);
-    if (lookup.status !== "Completed") {
-      return _khaltiResultPage(res, false, "Payment verification failed.");
+    const payment = await Payment.findOne({
+      $or: [{ transactionUuid }, { khaltiPidx: pidx }],
+      method: "khalti",
+    });
+
+    if (!payment) {
+      return _khaltiResultPage(res, false, "Payment record not found.");
     }
 
-    const payment = await Payment.findOneAndUpdate(
-      { transactionUuid, status: "pending" },
-      {
-        status: "completed",
-        gatewayTransactionId: lookup.transaction_id,
-        khaltiPidx: pidx,
-        gatewayResponse: lookup,
-        verifiedAt: new Date(),
-      },
-      { new: true }
+    if (!payment.khaltiPidx) {
+      await Payment.findByIdAndUpdate(payment._id, { khaltiPidx: pidx, gatewayResponse: req.query });
+      payment.khaltiPidx = pidx;
+    }
+
+    if (payment.status === "completed") {
+      return _khaltiResultPage(res, true);
+    }
+
+    const result = await reconcileKhaltiPayment(payment);
+
+    if (result.status === "completed") {
+      return _khaltiResultPage(res, true);
+    }
+
+    if (result.status === "failed") {
+      return _khaltiResultPage(res, false, "Payment was cancelled, expired, or not completed.");
+    }
+
+    return _khaltiResultPage(
+      res,
+      false,
+      "Payment is pending confirmation. Please return to app and wait for final status."
     );
-
-    if (!payment) return _khaltiResultPage(res, false, "Payment already processed.");
-
-    await activateSubscription(payment);
-    _khaltiResultPage(res, true);
   } catch (err) {
     _khaltiResultPage(res, false, err.message);
   }
@@ -400,11 +465,17 @@ function _khaltiResultPage(res, success, message = "") {
 // App polls this after opening payment URL to detect completion
 router.get("/verify/:transactionUuid", async (req, res) => {
   try {
-    const payment = await Payment.findOne({
+    let payment = await Payment.findOne({
       transactionUuid: req.params.transactionUuid,
-    }).lean();
+    });
 
     if (!payment) return res.status(404).json({ message: "Payment not found" });
+
+    if (payment.method === "khalti" && payment.status === "pending" && payment.khaltiPidx) {
+      const result = await reconcileKhaltiPayment(payment);
+      payment = (result.payment || payment);
+      payment.status = result.status;
+    }
 
     res.json({
       transactionUuid: payment.transactionUuid,

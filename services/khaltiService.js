@@ -2,14 +2,34 @@ const KHALTI_SECRET_KEY = process.env.KHALTI_SECRET_KEY || "test_secret_key_dc74
 const KHALTI_BASE_URL = process.env.KHALTI_BASE_URL || "https://dev.khalti.com";
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:5000";
 
+function _normalizeAmountToPaisa(amountNpr) {
+  // Khalti expects integer amount in paisa.
+  return Math.round(Number(amountNpr) * 100);
+}
+
+async function _readKhaltiError(response) {
+  const text = await response.text();
+  try {
+    const parsed = JSON.parse(text);
+    return parsed?.detail || parsed?.message || parsed?.error_key || text;
+  } catch {
+    return text;
+  }
+}
+
 /**
  * Initiates a Khalti payment and returns { pidx, payment_url }.
  */
 export async function initiateKhaltiPayment({ amount, transactionUuid, planDisplayName }) {
+  const amountInPaisa = _normalizeAmountToPaisa(amount);
+  if (!Number.isInteger(amountInPaisa) || amountInPaisa < 1000) {
+    throw new Error("Khalti requires amount >= NPR 10 (1000 paisa)");
+  }
+
   const body = {
     return_url: `${BACKEND_URL}/api/payments/khalti/callback`,
     website_url: BACKEND_URL,
-    amount: amount * 100, // Khalti expects paisa (1 NPR = 100 paisa)
+    amount: amountInPaisa,
     purchase_order_id: transactionUuid,
     purchase_order_name: `Zeewant ${planDisplayName}`,
   };
@@ -24,7 +44,7 @@ export async function initiateKhaltiPayment({ amount, transactionUuid, planDispl
   });
 
   if (!response.ok) {
-    const err = await response.text();
+    const err = await _readKhaltiError(response);
     throw new Error(`Khalti initiation failed: ${err}`);
   }
 
@@ -46,7 +66,7 @@ export async function verifyKhaltiPayment(pidx) {
   });
 
   if (!response.ok) {
-    const err = await response.text();
+    const err = await _readKhaltiError(response);
     throw new Error(`Khalti verification failed: ${err}`);
   }
 
