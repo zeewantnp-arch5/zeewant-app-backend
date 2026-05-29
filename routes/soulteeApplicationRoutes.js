@@ -52,7 +52,7 @@ export default function createSoulteeApplicationRoutes(io) {
       const {
         firebaseUid, name, phone, email, dateOfBirth, gender, city, country,
         category, specializations, experienceYears, bio, languages,
-        feePerSession, availabilityHours, emotionalSupportAreas,
+        feePerSession, durationMinutes, availabilityHours, emotionalSupportAreas,
         certifications, profileImageUrl, introVideoUrl, socialLinks,
       } = req.body;
 
@@ -74,7 +74,7 @@ export default function createSoulteeApplicationRoutes(io) {
         firebaseUid, name, phone, email, dateOfBirth, gender, city, country,
         category: normalizeSoulteeCategory(category),
         specializations, experienceYears, bio, languages,
-        feePerSession, availabilityHours, emotionalSupportAreas,
+        feePerSession, durationMinutes, availabilityHours, emotionalSupportAreas,
         certifications, profileImageUrl, introVideoUrl, socialLinks,
       };
 

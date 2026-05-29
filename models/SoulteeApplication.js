@@ -48,6 +48,7 @@ const soulteeApplicationSchema = new mongoose.Schema(
     bio:                  { type: String },
     languages:            [String],
     feePerSession:        { type: Number },
+    durationMinutes:      { type: Number },
     availabilityHours:    { type: String },
 
     // ── Emotional support capabilities ────────────────────────────────────────
