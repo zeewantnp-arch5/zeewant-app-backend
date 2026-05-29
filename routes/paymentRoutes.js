@@ -15,8 +15,12 @@ const router = express.Router();
 
 async function activateSubscription(payment) {
   const startDate = new Date();
+  const soultee = await Soultee.findOne({ firebaseUid: payment.soulteeId })
+    .select("durationMinutes")
+    .lean();
+  const durationMinutes = Math.max(1, Number(soultee?.durationMinutes ?? 60));
   const expiryDate = new Date(startDate);
-  expiryDate.setDate(expiryDate.getDate() + 30); // 30-day access per session payment
+  expiryDate.setMinutes(expiryDate.getMinutes() + durationMinutes);
 
   await UserSubscription.create({
     userId:        payment.userId,
@@ -32,8 +36,9 @@ async function activateSubscription(payment) {
     expiryDate,
   });
 
-  const expiryStr = expiryDate.toLocaleDateString("en-US", {
+  const expiryStr = expiryDate.toLocaleString("en-US", {
     day: "numeric", month: "long", year: "numeric",
+    hour: "numeric", minute: "2-digit",
   });
   sendPushNotification(payment.userId, {
     title: "✅ Session Payment Confirmed",

@@ -21,7 +21,7 @@ const userSubscriptionSchema = new mongoose.Schema(
     expiryDate: { type: Date, required: true },
     paymentId: { type: mongoose.Schema.Types.ObjectId, ref: "Payment" },
     transactionId: { type: String, default: null },
-    paymentMethod: { type: String, enum: ["esewa", "khalti"], required: true },
+    paymentMethod: { type: String, enum: ["esewa", "khalti", "code"], required: true },
     amountPaid: { type: Number, required: true },
     // Notification tracking — prevents duplicate alerts
     warningSentAt: { type: Date, default: null },      // 24-hr expiry warning sent

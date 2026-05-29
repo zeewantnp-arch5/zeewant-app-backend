@@ -1,6 +1,7 @@
 import express from "express";
 import SubscriptionPlan from "../models/SubscriptionPlan.js";
 import UserSubscription from "../models/UserSubscription.js";
+import SessionAccessCode from "../models/SessionAccessCode.js";
 
 const router = express.Router();
 
@@ -69,6 +70,91 @@ router.get("/history/:userId", async (req, res) => {
       .lean();
 
     res.json({ subscriptions });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─── POST /api/subscriptions/redeem-code ────────────────────────────────────
+// Body: { userId, soulteeId, code }
+router.post("/redeem-code", async (req, res) => {
+  try {
+    const { userId, soulteeId, code } = req.body;
+    const normalizedCode = String(code || "").trim().toUpperCase();
+
+    if (!userId || !soulteeId || !normalizedCode) {
+      return res.status(400).json({
+        message: "userId, soulteeId, and code are required",
+      });
+    }
+
+    const now = new Date();
+    const accessCode = await SessionAccessCode.findOne({
+      userId,
+      soulteeId,
+      code: normalizedCode,
+      status: "active",
+      validUntil: { $gt: now },
+    });
+
+    if (!accessCode) {
+      return res.status(404).json({
+        message: "Invalid or expired access code",
+      });
+    }
+
+    const currentSubscription = await UserSubscription.findOne({
+      userId,
+      soulteeId,
+      status: "active",
+      expiryDate: { $gt: now },
+    });
+
+    const baseDate = currentSubscription?.expiryDate && currentSubscription.expiryDate > now
+      ? new Date(currentSubscription.expiryDate)
+      : new Date(now);
+    const expiryDate = new Date(baseDate);
+    expiryDate.setDate(expiryDate.getDate() + 7);
+
+    const subscription = currentSubscription
+      ? await UserSubscription.findByIdAndUpdate(
+          currentSubscription._id,
+          {
+            status: "active",
+            planName: "reaccess-code",
+            startDate: currentSubscription.startDate || now,
+            expiryDate,
+            paymentMethod: "code",
+            amountPaid: 0,
+          },
+          { new: true }
+        )
+      : await UserSubscription.create({
+          userId,
+          soulteeId,
+          planId: null,
+          planName: "reaccess-code",
+          paymentMethod: "code",
+          amountPaid: 0,
+          status: "active",
+          startDate: now,
+          expiryDate,
+        });
+
+    accessCode.status = "redeemed";
+    accessCode.redeemedAt = now;
+    accessCode.redeemedSubscriptionId = subscription._id;
+    await accessCode.save();
+
+    res.json({
+      message: "Access code redeemed successfully",
+      subscription,
+      accessCode: {
+        code: accessCode.code,
+        validUntil: accessCode.validUntil,
+        redeemedAt: accessCode.redeemedAt,
+      },
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

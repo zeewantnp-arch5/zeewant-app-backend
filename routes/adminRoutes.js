@@ -1,4 +1,5 @@
 import express from "express";
+import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import multer from "multer";
 import Souljar from "../models/souljar.js";
@@ -12,6 +13,7 @@ import AuditLog from "../models/AuditLog.js";
 import SystemSettings from "../models/SystemSettings.js";
 import FCMToken from "../models/FCMToken.js";
 import Notification from "../models/Notification.js";
+import SessionAccessCode from "../models/SessionAccessCode.js";
 import Post from "../models/Post.js";
 import admin, {
   syncNotificationToRTDB,
@@ -600,6 +602,7 @@ router.patch(
             : data.specialization || "",
           languages: data.languages || [],
           feePerSession: data.fees || 0,
+          durationMinutes: Number(data.durationMinutes ?? data.sessionMinutes ?? 60) || 60,
           bio: data.bio || "",
           profileImage: data.profileImageUrl || "",
           status: "offline",
@@ -620,6 +623,55 @@ router.patch(
 
       res.json({ message: "SOULTEE approved successfully" });
     } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  }
+);
+
+// ─── POST /api/admin/soultees/:uid/access-code ──────────────────────────────
+// Body: { studentFirebaseUid, validDays? }
+router.post(
+  "/soultees/:uid/access-code",
+  requireAdmin,
+  requireRole("superAdmin"),
+  async (req, res) => {
+    try {
+      const { uid } = req.params;
+      const { studentFirebaseUid, validDays } = req.body;
+      if (!studentFirebaseUid) {
+        return res.status(400).json({ message: "studentFirebaseUid is required" });
+      }
+
+      const soultee = await Soultee.findOne({ firebaseUid: uid }).select("firebaseUid name").lean();
+      if (!soultee) {
+        return res.status(404).json({ message: "SOULTEE not found" });
+      }
+
+      const code = `ZW-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+      const now = new Date();
+      const expiryDate = new Date(now);
+      expiryDate.setDate(expiryDate.getDate() + Math.max(1, Number(validDays) || 7));
+
+      const accessCode = await SessionAccessCode.create({
+        code,
+        userId: studentFirebaseUid,
+        soulteeId: uid,
+        issuedBy: req.admin?.sub || req.admin?.uid || req.admin?.id || req.admin?.email || null,
+        status: "active",
+        validUntil: expiryDate,
+      });
+
+      res.json({
+        message: "Access code generated",
+        code: accessCode.code,
+        validUntil: accessCode.validUntil,
+        soultee: {
+          uid: soultee.firebaseUid,
+          name: soultee.name,
+        },
+      });
+    } catch (error) {
+      console.error("[Access Code]", error);
       res.status(500).json({ message: error.message });
     }
   }
@@ -1610,6 +1662,7 @@ router.patch(
             specialization:  (application.specializations || []).join(", "),
             languages:       application.languages || [],
             feePerSession:   application.feePerSession || 0,
+            durationMinutes: Number(application.durationMinutes ?? application.sessionMinutes ?? 60) || 60,
             bio:             application.bio || "",
             profileImage:    application.profileImageUrl || "",
             experienceYears: application.experienceYears || 0,
