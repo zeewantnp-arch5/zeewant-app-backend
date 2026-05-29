@@ -2047,7 +2047,79 @@ router.get(
         )
         .sort({ createdAt: -1 })
         .lean();
-      res.json({ soultees });
+
+      const hasBillingData = (entry) => {
+        const hasText = (value) => (value || "").toString().trim().length > 0;
+        const bank = entry?.bankAccount || {};
+        const bankFields = [
+          bank.bankName,
+          bank.accountNumber,
+          bank.accountHolder,
+          bank.branchName,
+          bank.bankQrUrl,
+        ];
+        const walletFields = [
+          entry?.esewaNumber,
+          entry?.esewaQrUrl,
+          entry?.khaltiNumber,
+          entry?.khaltiQrUrl,
+        ];
+
+        return [...bankFields, ...walletFields].some(hasText);
+      };
+
+      const completenessScore = (entry) => {
+        const bank = entry?.bankAccount || {};
+        const values = [
+          entry?.name,
+          entry?.email,
+          bank.bankName,
+          bank.accountNumber,
+          bank.accountHolder,
+          bank.branchName,
+          bank.bankQrUrl,
+          entry?.esewaNumber,
+          entry?.esewaQrUrl,
+          entry?.khaltiNumber,
+          entry?.khaltiQrUrl,
+        ];
+        return values.reduce(
+          (count, value) =>
+            count + ((value || "").toString().trim().length > 0 ? 1 : 0),
+          0
+        );
+      };
+
+      const pickBest = (current, incoming) => {
+        if (!current) return incoming;
+
+        const currentScore = completenessScore(current);
+        const incomingScore = completenessScore(incoming);
+
+        if (incomingScore !== currentScore) {
+          return incomingScore > currentScore ? incoming : current;
+        }
+
+        const currentTime = new Date(current.createdAt || 0).getTime();
+        const incomingTime = new Date(incoming.createdAt || 0).getTime();
+        return incomingTime > currentTime ? incoming : current;
+      };
+
+      const dedupedMap = new Map();
+      for (const soultee of soultees) {
+        const uidKey = (soultee.firebaseUid || "").toString().trim();
+        const emailKey = (soultee.email || "").toString().trim().toLowerCase();
+        const nameKey = (soultee.name || "").toString().trim().toLowerCase();
+        const key = uidKey || emailKey || nameKey;
+        if (!key) continue;
+        dedupedMap.set(key, pickBest(dedupedMap.get(key), soultee));
+      }
+
+      const submittedSoultees = Array.from(dedupedMap.values())
+        .filter(hasBillingData)
+        .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+
+      res.json({ soultees: submittedSoultees });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
