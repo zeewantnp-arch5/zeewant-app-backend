@@ -1399,13 +1399,14 @@ router.get("/media/signed-url", requireAdmin, async (req, res) => {
 // ════════════════════════════════════════════════════════════════════════════
 
 // ─── Helper: send multi-channel notification to an applicant ─────────────────
-async function notifyApplicant(io, { recipientUid, type, title, body, data = {} }) {
-  // application_approved → user is now a soultee; all others → still a student
-  const recipientRole = type === "application_approved" ? "soultee" : "student";
+async function notifyApplicant(io, { recipientUid, type, title, body, data = {}, recipientRole }) {
+  // application_approved → user is now a soultee; all others default to student
+  const resolvedRecipientRole =
+    recipientRole || (type === "application_approved" ? "soultee" : "student");
 
   const notification = await Notification.create({
     recipientUid,
-    recipientRole,
+    recipientRole: resolvedRecipientRole,
     type,
     title,
     body,
@@ -2120,6 +2121,56 @@ router.get(
         .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
 
       res.json({ soultees: submittedSoultees });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
+// ── ADMIN — mark soultee payout as successful and notify soultee ────────────
+// PATCH /api/admin/soultees/:soulteeUid/payment-success
+router.patch(
+  "/soultees/:soulteeUid/payment-success",
+  requireAdmin,
+  requireRole("superAdmin"),
+  async (req, res) => {
+    try {
+      const soulteeUid = (req.params.soulteeUid || "").trim();
+      if (!soulteeUid) {
+        return res.status(400).json({ message: "soulteeUid is required" });
+      }
+
+      const soultee = await Soultee.findOne({ firebaseUid: soulteeUid })
+        .select("firebaseUid name")
+        .lean();
+      if (!soultee) return res.status(404).json({ message: "Soultee not found" });
+
+      const io = req.app.get("io");
+      if (io) {
+        await notifyApplicant(io, {
+          recipientUid: soulteeUid,
+          recipientRole: "soultee",
+          type: "billing_payment_success",
+          title: "Payment Successful",
+          body: "Your payment has been processed successfully by admin.",
+          data: {
+            type: "billing_payment_success",
+            soulteeUid,
+            screen: "notifications",
+          },
+        });
+      }
+
+      await writeAuditLog(req, {
+        action: "soultee_payment_marked_success",
+        resourceType: "soultee",
+        resourceId: soulteeUid,
+        resourceName: soultee.name || soulteeUid,
+        description: `Admin marked payment successful for soultee ${soultee.name || soulteeUid}`,
+        severity: "info",
+      });
+
+      res.json({ success: true, message: "Payment marked successful and notification sent." });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
