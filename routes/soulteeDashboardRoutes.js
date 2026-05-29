@@ -903,5 +903,61 @@ export default function createSoulteeDashboardRoutes(io) {
     req.on("close", () => clearInterval(interval));
   });
 
+  // ───────────────────────────────────────────────────────────────────────────
+  //  SOULTEE — set / update own consultation fee
+  //  PATCH /api/soultee-dashboard/:soulteeUid/fee
+  //  Body: { feePerSession: Number, currency?: String }
+  // ───────────────────────────────────────────────────────────────────────────
+  router.patch("/:soulteeUid/fee", async (req, res) => {
+    try {
+      const { soulteeUid } = req.params;
+      const { feePerSession, currency } = req.body;
+
+      if (feePerSession === undefined || feePerSession === null) {
+        return res.status(400).json({ message: "feePerSession is required" });
+      }
+      const fee = Number(feePerSession);
+      if (!Number.isFinite(fee) || fee < 0) {
+        return res.status(400).json({ message: "feePerSession must be a non-negative number" });
+      }
+
+      const update = { feePerSession: fee };
+      if (currency) update.currency = currency.toString().toUpperCase();
+
+      const soultee = await Soultee.findOneAndUpdate(
+        { firebaseUid: soulteeUid },
+        { $set: update },
+        { new: true }
+      ).select("name feePerSession currency").lean();
+
+      if (!soultee) return res.status(404).json({ message: "Soultee not found" });
+
+      res.json({ success: true, soultee });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  //  STUDENT — get a single soultee's fee before booking
+  //  GET /api/soultee-dashboard/:soulteeUid/fee
+  // ───────────────────────────────────────────────────────────────────────────
+  router.get("/:soulteeUid/fee", async (req, res) => {
+    try {
+      const soultee = await Soultee.findOne({ firebaseUid: req.params.soulteeUid })
+        .select("name feePerSession currency")
+        .lean();
+      if (!soultee) return res.status(404).json({ message: "Soultee not found" });
+      res.json({
+        soulteeId: req.params.soulteeUid,
+        name: soultee.name,
+        feePerSession: soultee.feePerSession ?? 0,
+        currency: soultee.currency ?? "NPR",
+      });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   return router;
 }

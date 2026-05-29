@@ -2003,5 +2003,38 @@ router.delete(
   }
 );
 
+// ── ADMIN — override any soultee's consultation fee ──────────────────────────
+// PATCH /api/admin/soultees/:soulteeUid/fee
+// Body: { feePerSession: Number, currency?: String }
+router.patch(
+  "/soultees/:soulteeUid/fee",
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { feePerSession, currency } = req.body;
+      if (feePerSession === undefined) {
+        return res.status(400).json({ message: "feePerSession is required" });
+      }
+      const fee = Number(feePerSession);
+      if (!Number.isFinite(fee) || fee < 0) {
+        return res.status(400).json({ message: "feePerSession must be a non-negative number" });
+      }
+      const update = { feePerSession: fee };
+      if (currency) update.currency = currency.toString().toUpperCase();
+
+      const soultee = await Soultee.findOneAndUpdate(
+        { firebaseUid: req.params.soulteeUid },
+        { $set: update },
+        { new: true }
+      ).select("name feePerSession currency").lean();
+
+      if (!soultee) return res.status(404).json({ message: "Soultee not found" });
+      res.json({ success: true, soultee });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
 export default router;
 

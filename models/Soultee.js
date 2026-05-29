@@ -11,7 +11,8 @@ const soulteeSchema = new mongoose.Schema({
   rating: { type: Number, default: 0 },
   totalFeedbacks: { type: Number, default: 0 },
   status: { type: String, default: "offline" }, // online | offline | busy
-  feePerSession: Number,
+  feePerSession: { type: Number, default: 0 },   // dynamic fee in NPR
+  currency: { type: String, default: "NPR" },
   durationMinutes: Number,
   bio: String,
   profileImage: String,

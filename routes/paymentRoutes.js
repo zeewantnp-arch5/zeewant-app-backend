@@ -1,9 +1,8 @@
 import express from "express";
 import crypto from "crypto";
 import Payment from "../models/Payment.js";
-import SubscriptionPlan from "../models/SubscriptionPlan.js";
+import Soultee from "../models/Soultee.js";
 import UserSubscription from "../models/UserSubscription.js";
-import { buildEsewaFormParams, verifyEsewaCallback } from "../services/esewaService.js";
 import { initiateKhaltiPayment, verifyKhaltiPayment } from "../services/khaltiService.js";
 import { sendPushNotification } from "../services/fcmService.js";
 
@@ -14,42 +13,37 @@ const router = express.Router();
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function activateSubscription(payment) {
-  const plan = await SubscriptionPlan.findById(payment.planId).lean();
   const startDate = new Date();
   const expiryDate = new Date(startDate);
-  expiryDate.setDate(expiryDate.getDate() + (plan?.durationDays ?? 30));
+  expiryDate.setDate(expiryDate.getDate() + 30); // 30-day access per session payment
 
   await UserSubscription.create({
-    userId: payment.userId,
-    soulteeId: payment.soulteeId,
-    planId: payment.planId,
-    planName: payment.planName,
-    paymentId: payment._id,
+    userId:        payment.userId,
+    soulteeId:     payment.soulteeId,
+    planId:        payment.planId ?? null,       // optional — may be null for dynamic payments
+    planName:      payment.planName ?? "session",
+    paymentId:     payment._id,
     transactionId: payment.gatewayTransactionId,
     paymentMethod: payment.method,
-    amountPaid: payment.amount,
-    status: "active",
+    amountPaid:    payment.amount,
+    status:        "active",
     startDate,
     expiryDate,
   });
 
-  // Notify user of successful subscription activation
-  const planDisplay = plan?.displayName ?? payment.planName;
   const expiryStr = expiryDate.toLocaleDateString("en-US", {
-    day: "numeric",
-    month: "long",
-    year: "numeric",
+    day: "numeric", month: "long", year: "numeric",
   });
   sendPushNotification(payment.userId, {
-    title: "✅ Subscription Activated",
-    body: `Your ${planDisplay} plan is now active. Chat access granted until ${expiryStr}.`,
+    title: "✅ Session Payment Confirmed",
+    body: `Your chat session has been unlocked until ${expiryStr}.`,
     data: {
       type: "subscription_activated",
-      planName: payment.planName,
+      soulteeId: payment.soulteeId,
       expiryDate: expiryDate.toISOString(),
       screen: "chat",
     },
-  }).catch(() => {}); // non-blocking — don't fail activation if FCM errors
+  }).catch(() => {});
 }
 
 const KHALTI_SUCCESS_STATUSES = new Set(["Completed"]);
@@ -114,54 +108,56 @@ async function reconcileKhaltiPayment(payment) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // POST /api/payments/initiate
-// Body: { userId, soulteeId, planName, method: 'esewa' | 'khalti' }
-// Returns payment URL / form params for the client to open
+// Body: { userId, soulteeId, method: 'khalti' }
+// Fee is fetched from the soultee's profile — never trusted from client.
 router.post("/initiate", async (req, res) => {
   try {
-    const { userId, soulteeId, planName, method } = req.body;
-    if (!userId || !soulteeId || !planName || !method) {
-      return res.status(400).json({ message: "userId, soulteeId, planName, and method are required" });
+    const { userId, soulteeId, method } = req.body;
+    if (!userId || !soulteeId || !method) {
+      return res.status(400).json({ message: "userId, soulteeId, and method are required" });
     }
-    if (!["esewa", "khalti"].includes(method)) {
-      return res.status(400).json({ message: "method must be 'esewa' or 'khalti'" });
+    if (method !== "khalti") {
+      return res.status(400).json({ message: "Only Khalti payments are supported" });
     }
 
-    const plan = await SubscriptionPlan.findOne({ name: planName, isActive: true }).lean();
-    if (!plan) return res.status(404).json({ message: "Plan not found" });
+    // Fetch fee from soultee profile — client cannot manipulate this
+    const soultee = await Soultee.findOne({ firebaseUid: soulteeId })
+      .select("name feePerSession currency")
+      .lean();
+    if (!soultee) return res.status(404).json({ message: "Soultee not found" });
 
-    // eSewa productId has a length limit — use 12-char hex instead of full UUID
-    const transactionUuid = crypto.randomBytes(6).toString('hex'); // e.g. "a3f9c2d1b04e"
+    const fee = Number(soultee.feePerSession ?? 0);
+    if (fee <= 0) {
+      return res.status(400).json({ message: "This Soultee has not set a consultation fee yet." });
+    }
+
+    const transactionUuid = crypto.randomBytes(6).toString("hex");
 
     const payment = await Payment.create({
       userId,
       soulteeId,
-      planId: plan._id,
-      planName: plan.name,
-      amount: plan.price,
+      planId:   null,
+      planName: "session",
+      amount:   fee,
       method,
       transactionUuid,
     });
 
-    if (method === "esewa") {
-      const { formAction, fields } = buildEsewaFormParams(plan.price, transactionUuid);
-      return res.json({
-        method: "esewa",
-        transactionUuid,
-        formUrl: `${process.env.BACKEND_URL || "http://localhost:5000"}/api/payments/esewa/form/${transactionUuid}`,
-        formAction,
-        fields,
-      });
-    }
-
-    // Khalti
+    // Khalti only
     const { pidx, paymentUrl } = await initiateKhaltiPayment({
-      amount: plan.price,
+      amount: fee,
       transactionUuid,
-      planDisplayName: plan.displayName,
+      planDisplayName: `Session with ${soultee.name}`,
     });
     await Payment.findByIdAndUpdate(payment._id, { khaltiPidx: pidx });
 
-    return res.json({ method: "khalti", transactionUuid, paymentUrl });
+    return res.json({
+      method: "khalti",
+      transactionUuid,
+      paymentUrl,
+      amount: fee,
+      currency: soultee.currency ?? "NPR",
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
