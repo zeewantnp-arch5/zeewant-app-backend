@@ -173,6 +173,7 @@ router.post("/initiate", async (req, res) => {
     return res.json({
       method: "khalti",
       transactionUuid,
+      pidx,
       paymentUrl,
       amount: fee,
       currency: soultee.currency ?? "NPR",
@@ -493,6 +494,65 @@ router.get("/khalti/callback", async (req, res) => {
 function _khaltiResultPage(res, success, message = "") {
   return _esewaResultPage(res, success, message); // same template
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  KHALTI SDK (old widget API) — server-side verification
+// ─────────────────────────────────────────────────────────────────────────────
+
+// POST /api/payments/khalti/sdk-verify
+// Body: { token, amount, userId, soulteeId, planName? }
+// Used by khalti_flutter SDK (v3.x) — verifies with old Khalti payment API
+router.post("/khalti/sdk-verify", async (req, res) => {
+  try {
+    const { token, amount, userId, soulteeId, planName } = req.body;
+    if (!token || !amount || !userId || !soulteeId) {
+      return res.status(400).json({
+        message: "token, amount, userId, soulteeId are required",
+      });
+    }
+
+    const secretKey = (process.env.KHALTI_SECRET_KEY || "").trim();
+    if (!secretKey) throw new Error("Khalti secret key not configured");
+
+    // Verify with Khalti old payment API
+    const verifyRes = await fetch("https://khalti.com/api/v2/payment/verify/", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Key ${secretKey}`,
+      },
+      body: JSON.stringify({ token, amount }),
+    });
+
+    if (!verifyRes.ok) {
+      const errText = await verifyRes.text();
+      return res.status(400).json({ message: `Khalti verification failed: ${errText}` });
+    }
+
+    const verifyData = await verifyRes.json();
+
+    // Create payment record
+    const transactionUuid = crypto.randomBytes(6).toString("hex");
+    const payment = await Payment.create({
+      userId,
+      soulteeId,
+      planName: planName || "session",
+      amount: Math.round(Number(amount) / 100), // paisa → NPR
+      method: "khalti",
+      transactionUuid,
+      gatewayTransactionId: verifyData.idx || token,
+      status: "completed",
+      gatewayResponse: verifyData,
+      verifiedAt: new Date(),
+    });
+
+    await activateSubscription(payment);
+
+    res.json({ success: true, message: "Payment verified and subscription activated" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  POLLING
