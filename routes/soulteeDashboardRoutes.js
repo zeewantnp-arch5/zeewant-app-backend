@@ -1,5 +1,6 @@
 import express from "express";
 import Soultee from "../models/Soultee.js";
+import SoulteeFeedback from "../models/SoulteeFeedback.js";
 import admin from "../config/firebase.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import Session from "../models/Session.js";
@@ -901,6 +902,84 @@ export default function createSoulteeDashboardRoutes(io) {
     await sendUpdate();
     const interval = setInterval(sendUpdate, 10000);
     req.on("close", () => clearInterval(interval));
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  //  STUDENT — submit feedback after a session
+  //  POST /api/soultee-dashboard/:soulteeUid/feedback
+  //  Body: { studentUid, studentName, rating (1-5), comment?, roomId? }
+  // ───────────────────────────────────────────────────────────────────────────
+  router.post("/:soulteeUid/feedback", async (req, res) => {
+    try {
+      const { soulteeUid } = req.params;
+      const { studentUid, studentName, rating, comment, roomId } = req.body;
+
+      if (!studentUid || !rating) {
+        return res.status(400).json({ message: "studentUid and rating are required" });
+      }
+      const r = Number(rating);
+      if (!Number.isFinite(r) || r < 1 || r > 5) {
+        return res.status(400).json({ message: "rating must be between 1 and 5" });
+      }
+
+      // Prevent duplicate feedback for the same session
+      if (roomId) {
+        const existing = await SoulteeFeedback.findOne({ studentUid, soulteeUid, roomId });
+        if (existing) {
+          return res.status(409).json({ message: "Feedback already submitted for this session" });
+        }
+      }
+
+      const feedback = await SoulteeFeedback.create({
+        studentUid,
+        soulteeUid,
+        studentName: studentName || "Anonymous",
+        rating: r,
+        comment: (comment || "").trim(),
+        roomId: roomId || null,
+      });
+
+      // Update soultee's average rating
+      const [agg] = await SoulteeFeedback.aggregate([
+        { $match: { soulteeUid } },
+        { $group: { _id: null, avg: { $avg: "$rating" }, count: { $sum: 1 } } },
+      ]);
+      if (agg) {
+        await Soultee.findOneAndUpdate(
+          { firebaseUid: soulteeUid },
+          { rating: Math.round(agg.avg * 10) / 10, totalFeedbacks: agg.count }
+        );
+      }
+
+      res.status(201).json({ success: true, feedback });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  //  SOULTEE — get all feedback received
+  //  GET /api/soultee-dashboard/:soulteeUid/feedbacks?limit=20&page=1
+  // ───────────────────────────────────────────────────────────────────────────
+  router.get("/:soulteeUid/feedbacks", async (req, res) => {
+    try {
+      const limit = Math.min(50, parseInt(req.query.limit) || 20);
+      const page  = Math.max(1,  parseInt(req.query.page)  || 1);
+      const skip  = (page - 1) * limit;
+
+      const [feedbacks, total] = await Promise.all([
+        SoulteeFeedback.find({ soulteeUid: req.params.soulteeUid })
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limit)
+          .lean(),
+        SoulteeFeedback.countDocuments({ soulteeUid: req.params.soulteeUid }),
+      ]);
+
+      res.json({ feedbacks, total, page, limit });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
   });
 
   // ───────────────────────────────────────────────────────────────────────────

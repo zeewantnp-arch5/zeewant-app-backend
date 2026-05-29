@@ -41,6 +41,22 @@ router.get("/status/:userId", async (req, res) => {
   }
 });
 
+// ─── GET /api/subscriptions/active-soultees/:userId ──────────────────────────
+// Returns list of soulteeIds that the student has an active subscription for.
+router.get("/active-soultees/:userId", async (req, res) => {
+  try {
+    const now = new Date();
+    const subs = await UserSubscription.find({
+      userId: req.params.userId,
+      status: "active",
+      expiryDate: { $gt: now },
+    }).select("soulteeId").lean();
+    res.json({ soulteeIds: subs.map(s => s.soulteeId).filter(Boolean) });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 // ─── GET /api/subscriptions/history/:userId ───────────────────────────────────
 // Returns full subscription history for a user
 router.get("/history/:userId", async (req, res) => {
