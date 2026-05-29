@@ -1,6 +1,27 @@
-const KHALTI_SECRET_KEY = process.env.KHALTI_SECRET_KEY || "test_secret_key_dc74e0fd57cb46cd93832aee0a390234";
-const KHALTI_BASE_URL = process.env.KHALTI_BASE_URL || "https://dev.khalti.com";
+const KHALTI_SECRET_KEY = (process.env.KHALTI_SECRET_KEY || "").trim();
+const KHALTI_BASE_URL = (process.env.KHALTI_BASE_URL || "").trim();
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:5000";
+
+function _resolveKhaltiBaseUrl() {
+  if (KHALTI_BASE_URL) {
+    return KHALTI_BASE_URL.replace(/\/+$/, "");
+  }
+
+  // Choose sensible defaults based on key type when base URL is not provided.
+  if (KHALTI_SECRET_KEY.startsWith("test_secret_key_")) {
+    return "https://dev.khalti.com";
+  }
+
+  return "https://khalti.com";
+}
+
+function _assertKhaltiConfig() {
+  if (!KHALTI_SECRET_KEY) {
+    throw new Error(
+      "Khalti is not configured. Set KHALTI_SECRET_KEY in backend .env"
+    );
+  }
+}
 
 function _normalizeAmountToPaisa(amountNpr) {
   // Khalti expects integer amount in paisa.
@@ -21,10 +42,14 @@ async function _readKhaltiError(response) {
  * Initiates a Khalti payment and returns { pidx, payment_url }.
  */
 export async function initiateKhaltiPayment({ amount, transactionUuid, planDisplayName }) {
+  _assertKhaltiConfig();
+
   const amountInPaisa = _normalizeAmountToPaisa(amount);
   if (!Number.isInteger(amountInPaisa) || amountInPaisa < 1000) {
     throw new Error("Khalti requires amount >= NPR 10 (1000 paisa)");
   }
+
+  const khaltiBaseUrl = _resolveKhaltiBaseUrl();
 
   const body = {
     return_url: `${BACKEND_URL}/api/payments/khalti/callback`,
@@ -34,7 +59,7 @@ export async function initiateKhaltiPayment({ amount, transactionUuid, planDispl
     purchase_order_name: `Zeewant ${planDisplayName}`,
   };
 
-  const response = await fetch(`${KHALTI_BASE_URL}/api/v2/epayment/initiate/`, {
+  const response = await fetch(`${khaltiBaseUrl}/api/v2/epayment/initiate/`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -56,7 +81,10 @@ export async function initiateKhaltiPayment({ amount, transactionUuid, planDispl
  * Verifies a Khalti payment by pidx. Returns the lookup response object.
  */
 export async function verifyKhaltiPayment(pidx) {
-  const response = await fetch(`${KHALTI_BASE_URL}/api/v2/epayment/lookup/`, {
+  _assertKhaltiConfig();
+
+  const khaltiBaseUrl = _resolveKhaltiBaseUrl();
+  const response = await fetch(`${khaltiBaseUrl}/api/v2/epayment/lookup/`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
