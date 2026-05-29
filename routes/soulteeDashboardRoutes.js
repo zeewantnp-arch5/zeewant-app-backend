@@ -983,6 +983,56 @@ export default function createSoulteeDashboardRoutes(io) {
   });
 
   // ───────────────────────────────────────────────────────────────────────────
+  //  SOULTEE — save / update bank account details
+  //  PATCH /api/soultee-dashboard/:soulteeUid/bank-account
+  //  Body: { bankName, accountNumber, accountHolder, branchName }
+  // ───────────────────────────────────────────────────────────────────────────
+  router.patch("/:soulteeUid/bank-account", async (req, res) => {
+    try {
+      const { bankName, accountNumber, accountHolder, branchName } = req.body;
+      if (!accountNumber || !accountHolder) {
+        return res.status(400).json({
+          message: "accountNumber and accountHolder are required",
+        });
+      }
+      const soultee = await Soultee.findOneAndUpdate(
+        { firebaseUid: req.params.soulteeUid },
+        {
+          $set: {
+            "bankAccount.bankName":      (bankName || "").trim(),
+            "bankAccount.accountNumber": accountNumber.trim(),
+            "bankAccount.accountHolder": accountHolder.trim(),
+            "bankAccount.branchName":    (branchName || "").trim(),
+            "bankAccount.updatedAt":     new Date(),
+          },
+        },
+        { new: true }
+      ).select("bankAccount").lean();
+
+      if (!soultee) return res.status(404).json({ message: "Soultee not found" });
+      res.json({ success: true, bankAccount: soultee.bankAccount });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  //  SOULTEE / STUDENT — get soultee payment info (bank + QR URLs)
+  //  GET /api/soultee-dashboard/:soulteeUid/payment-info
+  // ───────────────────────────────────────────────────────────────────────────
+  router.get("/:soulteeUid/payment-info", async (req, res) => {
+    try {
+      const soultee = await Soultee.findOne({ firebaseUid: req.params.soulteeUid })
+        .select("name feePerSession currency bankAccount esewaQrUrl khaltiQrUrl")
+        .lean();
+      if (!soultee) return res.status(404).json({ message: "Soultee not found" });
+      res.json(soultee);
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
   //  SOULTEE — set / update own consultation fee
   //  PATCH /api/soultee-dashboard/:soulteeUid/fee
   //  Body: { feePerSession: Number, currency?: String }

@@ -2003,6 +2003,37 @@ router.delete(
   }
 );
 
+// ── ADMIN — set eSewa / Khalti QR URLs for a soultee ─────────────────────────
+// PATCH /api/admin/soultees/:soulteeUid/payment-qr
+// Body: { esewaQrUrl?, khaltiQrUrl? }
+router.patch(
+  "/soultees/:soulteeUid/payment-qr",
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { esewaQrUrl, khaltiQrUrl } = req.body;
+      const update = {};
+      if (esewaQrUrl  !== undefined) update.esewaQrUrl  = (esewaQrUrl  || "").trim();
+      if (khaltiQrUrl !== undefined) update.khaltiQrUrl = (khaltiQrUrl || "").trim();
+
+      if (Object.keys(update).length === 0) {
+        return res.status(400).json({ message: "Provide esewaQrUrl or khaltiQrUrl" });
+      }
+
+      const soultee = await Soultee.findOneAndUpdate(
+        { firebaseUid: req.params.soulteeUid },
+        { $set: update },
+        { new: true }
+      ).select("name esewaQrUrl khaltiQrUrl").lean();
+
+      if (!soultee) return res.status(404).json({ message: "Soultee not found" });
+      res.json({ success: true, soultee });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
 // ── ADMIN — override any soultee's consultation fee ──────────────────────────
 // PATCH /api/admin/soultees/:soulteeUid/fee
 // Body: { feePerSession: Number, currency?: String }

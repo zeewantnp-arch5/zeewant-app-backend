@@ -11,11 +11,21 @@ const soulteeSchema = new mongoose.Schema({
   rating: { type: Number, default: 0 },
   totalFeedbacks: { type: Number, default: 0 },
   status: { type: String, default: "offline" }, // online | offline | busy
-  feePerSession: { type: Number, default: 0 },   // dynamic fee in NPR
+  feePerSession: { type: Number, default: 0 },
   currency: { type: String, default: "NPR" },
   durationMinutes: Number,
   bio: String,
   profileImage: String,
+  // ── Payment details ─────────────────────────────────────────────────────────
+  bankAccount: {
+    bankName:      { type: String, default: "" },
+    accountNumber: { type: String, default: "" },
+    accountHolder: { type: String, default: "" },
+    branchName:    { type: String, default: "" },
+    updatedAt:     { type: Date,   default: null },
+  },
+  esewaQrUrl:  { type: String, default: "" }, // set by admin
+  khaltiQrUrl: { type: String, default: "" }, // set by admin
 }, { timestamps: true });
 
 export default mongoose.model("Soultee", soulteeSchema);
