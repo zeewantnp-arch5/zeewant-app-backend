@@ -24,8 +24,10 @@ const soulteeSchema = new mongoose.Schema({
     branchName:    { type: String, default: "" },
     updatedAt:     { type: Date,   default: null },
   },
-  esewaQrUrl:  { type: String, default: "" }, // set by admin
-  khaltiQrUrl: { type: String, default: "" }, // set by admin
+  esewaNumber: { type: String, default: "" },  // soultee's eSewa ID/number
+  esewaQrUrl:  { type: String, default: "" },  // QR image uploaded by soultee
+  khaltiNumber: { type: String, default: "" }, // soultee's Khalti ID/number
+  khaltiQrUrl:  { type: String, default: "" }, // QR image uploaded by soultee
 }, { timestamps: true });
 
 export default mongoose.model("Soultee", soulteeSchema);

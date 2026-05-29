@@ -2034,6 +2034,26 @@ router.patch(
   }
 );
 
+// ── ADMIN — get all soultees' billing info (bank + wallet) ──────────────────
+// GET /api/admin/soultees/billing-info
+router.get(
+  "/soultees/billing-info",
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const soultees = await Soultee.find()
+        .select(
+          "firebaseUid name email status bankAccount esewaNumber esewaQrUrl khaltiNumber khaltiQrUrl createdAt"
+        )
+        .sort({ createdAt: -1 })
+        .lean();
+      res.json({ soultees });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
 // ── ADMIN — override any soultee's consultation fee ──────────────────────────
 // PATCH /api/admin/soultees/:soulteeUid/fee
 // Body: { feePerSession: Number, currency?: String }

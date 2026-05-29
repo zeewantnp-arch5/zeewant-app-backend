@@ -1017,13 +1017,44 @@ export default function createSoulteeDashboardRoutes(io) {
   });
 
   // ───────────────────────────────────────────────────────────────────────────
+  //  SOULTEE — update digital wallet (eSewa / Khalti number + QR URL)
+  //  PATCH /api/soultee-dashboard/:soulteeUid/digital-wallet
+  //  Body: { esewaNumber?, esewaQrUrl?, khaltiNumber?, khaltiQrUrl? }
+  // ───────────────────────────────────────────────────────────────────────────
+  router.patch("/:soulteeUid/digital-wallet", async (req, res) => {
+    try {
+      const { esewaNumber, esewaQrUrl, khaltiNumber, khaltiQrUrl } = req.body;
+      const update = {};
+      if (esewaNumber  !== undefined) update.esewaNumber  = (esewaNumber  || "").trim();
+      if (esewaQrUrl   !== undefined) update.esewaQrUrl   = (esewaQrUrl   || "").trim();
+      if (khaltiNumber !== undefined) update.khaltiNumber = (khaltiNumber || "").trim();
+      if (khaltiQrUrl  !== undefined) update.khaltiQrUrl  = (khaltiQrUrl  || "").trim();
+
+      if (Object.keys(update).length === 0) {
+        return res.status(400).json({ message: "No fields provided" });
+      }
+
+      const soultee = await Soultee.findOneAndUpdate(
+        { firebaseUid: req.params.soulteeUid },
+        { $set: update },
+        { new: true }
+      ).select("esewaNumber esewaQrUrl khaltiNumber khaltiQrUrl").lean();
+
+      if (!soultee) return res.status(404).json({ message: "Soultee not found" });
+      res.json({ success: true, ...soultee });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
   //  SOULTEE / STUDENT — get soultee payment info (bank + QR URLs)
   //  GET /api/soultee-dashboard/:soulteeUid/payment-info
   // ───────────────────────────────────────────────────────────────────────────
   router.get("/:soulteeUid/payment-info", async (req, res) => {
     try {
       const soultee = await Soultee.findOne({ firebaseUid: req.params.soulteeUid })
-        .select("name feePerSession currency bankAccount esewaQrUrl khaltiQrUrl")
+        .select("name feePerSession currency bankAccount esewaNumber esewaQrUrl khaltiNumber khaltiQrUrl")
         .lean();
       if (!soultee) return res.status(404).json({ message: "Soultee not found" });
       res.json(soultee);
