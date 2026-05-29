@@ -7,9 +7,9 @@ const paymentSchema = new mongoose.Schema(
     planId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "SubscriptionPlan",
-      required: true,
+      default: null,   // null for dynamic-fee payments (no fixed plan)
     },
-    planName: { type: String, required: true },
+    planName: { type: String, default: "session" },
     amount: { type: Number, required: true }, // NPR
     method: { type: String, enum: ["esewa", "khalti"], required: true },
     // Unique UUID generated per payment attempt; used to correlate gateway callbacks

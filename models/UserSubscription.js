@@ -8,9 +8,9 @@ const userSubscriptionSchema = new mongoose.Schema(
     planId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "SubscriptionPlan",
-      required: true,
+      default: null,   // null for dynamic-fee (soultee-specific) payments
     },
-    planName: { type: String, enum: ["normal", "pro", "advanced"], required: true },
+    planName: { type: String, default: "session" }, // "session" for dynamic, or "normal"/"pro"/"advanced"
     status: {
       type: String,
       enum: ["active", "expired", "cancelled"],
