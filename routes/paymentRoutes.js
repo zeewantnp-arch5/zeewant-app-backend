@@ -3,6 +3,7 @@ import crypto from "crypto";
 import Payment from "../models/Payment.js";
 import Soultee from "../models/Soultee.js";
 import UserSubscription from "../models/UserSubscription.js";
+import { buildEsewaFormParams, verifyEsewaCallback } from "../services/esewaService.js";
 import { initiateKhaltiPayment, verifyKhaltiPayment } from "../services/khaltiService.js";
 import { sendPushNotification } from "../services/fcmService.js";
 
@@ -116,8 +117,8 @@ router.post("/initiate", async (req, res) => {
     if (!userId || !soulteeId || !method) {
       return res.status(400).json({ message: "userId, soulteeId, and method are required" });
     }
-    if (method !== "khalti") {
-      return res.status(400).json({ message: "Only Khalti payments are supported" });
+    if (!["esewa", "khalti"].includes(method)) {
+      return res.status(400).json({ message: "method must be 'esewa' or 'khalti'" });
     }
 
     // Fetch fee from soultee profile — client cannot manipulate this
@@ -143,7 +144,20 @@ router.post("/initiate", async (req, res) => {
       transactionUuid,
     });
 
-    // Khalti only
+    if (method === "esewa") {
+      const { formAction, fields } = buildEsewaFormParams(fee, transactionUuid);
+      return res.json({
+        method: "esewa",
+        transactionUuid,
+        amount: fee,
+        currency: soultee.currency ?? "NPR",
+        formUrl: `${process.env.BACKEND_URL || "http://localhost:5000"}/api/payments/esewa/form/${transactionUuid}`,
+        formAction,
+        fields,
+      });
+    }
+
+    // Khalti
     const { pidx, paymentUrl } = await initiateKhaltiPayment({
       amount: fee,
       transactionUuid,
