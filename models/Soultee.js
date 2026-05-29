@@ -22,6 +22,7 @@ const soulteeSchema = new mongoose.Schema({
     accountNumber: { type: String, default: "" },
     accountHolder: { type: String, default: "" },
     branchName:    { type: String, default: "" },
+    bankQrUrl:     { type: String, default: "" },
     updatedAt:     { type: Date,   default: null },
   },
   esewaNumber: { type: String, default: "" },  // soultee's eSewa ID/number

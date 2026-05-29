@@ -989,7 +989,7 @@ export default function createSoulteeDashboardRoutes(io) {
   // ───────────────────────────────────────────────────────────────────────────
   router.patch("/:soulteeUid/bank-account", async (req, res) => {
     try {
-      const { bankName, accountNumber, accountHolder, branchName } = req.body;
+      const { bankName, accountNumber, accountHolder, branchName, bankQrUrl } = req.body;
       if (!accountNumber || !accountHolder) {
         return res.status(400).json({
           message: "accountNumber and accountHolder are required",
@@ -1003,6 +1003,7 @@ export default function createSoulteeDashboardRoutes(io) {
             "bankAccount.accountNumber": accountNumber.trim(),
             "bankAccount.accountHolder": accountHolder.trim(),
             "bankAccount.branchName":    (branchName || "").trim(),
+            "bankAccount.bankQrUrl":     (bankQrUrl  || "").trim(),
             "bankAccount.updatedAt":     new Date(),
           },
         },
