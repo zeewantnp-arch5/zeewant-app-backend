@@ -178,6 +178,7 @@ router.post("/initiate", async (req, res) => {
       currency: soultee.currency ?? "NPR",
     });
   } catch (err) {
+    console.error("[Payments Initiate]", err);
     res.status(500).json({ message: err.message });
   }
 });
