@@ -2177,6 +2177,126 @@ router.patch(
   }
 );
 
+// ── ADMIN — clear soultee billing info (bank/eSewa/Khalti/all) ─────────────
+// PATCH /api/admin/soultees/:soulteeUid/billing-clear
+// Body: { target: 'bank' | 'esewa' | 'khalti' | 'all' }
+router.patch(
+  "/soultees/:soulteeUid/billing-clear",
+  requireAdmin,
+  requireRole("superAdmin"),
+  async (req, res) => {
+    try {
+      const soulteeUid = (req.params.soulteeUid || "").trim();
+      const target = (req.body?.target || "").toString().trim().toLowerCase();
+
+      if (!soulteeUid) {
+        return res.status(400).json({ message: "soulteeUid is required" });
+      }
+      if (!["bank", "esewa", "khalti", "all"].includes(target)) {
+        return res.status(400).json({ message: "target must be bank, esewa, khalti, or all" });
+      }
+
+      const setUpdate = {};
+      if (target === "bank" || target === "all") {
+        setUpdate["bankAccount.bankName"] = "";
+        setUpdate["bankAccount.accountNumber"] = "";
+        setUpdate["bankAccount.accountHolder"] = "";
+        setUpdate["bankAccount.branchName"] = "";
+        setUpdate["bankAccount.bankQrUrl"] = "";
+        setUpdate["bankAccount.updatedAt"] = null;
+      }
+      if (target === "esewa" || target === "all") {
+        setUpdate.esewaNumber = "";
+        setUpdate.esewaQrUrl = "";
+      }
+      if (target === "khalti" || target === "all") {
+        setUpdate.khaltiNumber = "";
+        setUpdate.khaltiQrUrl = "";
+      }
+
+      const soultee = await Soultee.findOneAndUpdate(
+        { firebaseUid: soulteeUid },
+        { $set: setUpdate },
+        { new: true }
+      )
+        .select("firebaseUid name")
+        .lean();
+
+      if (!soultee) return res.status(404).json({ message: "Soultee not found" });
+
+      await writeAuditLog(req, {
+        action: "soultee_billing_cleared",
+        resourceType: "soultee",
+        resourceId: soulteeUid,
+        resourceName: soultee.name || soulteeUid,
+        description: `Admin cleared ${target} billing info for soultee ${soultee.name || soulteeUid}`,
+        severity: "warn",
+      });
+
+      res.json({ success: true, message: `${target} billing info cleared.` });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
+// ── ADMIN — restore soultee billing info (undo clear) ──────────────────────
+// PATCH /api/admin/soultees/:soulteeUid/billing-restore
+// Body: {
+//   bankAccount?: { bankName?, accountNumber?, accountHolder?, branchName?, bankQrUrl?, updatedAt? },
+//   esewaNumber?, esewaQrUrl?, khaltiNumber?, khaltiQrUrl?
+// }
+router.patch(
+  "/soultees/:soulteeUid/billing-restore",
+  requireAdmin,
+  requireRole("superAdmin"),
+  async (req, res) => {
+    try {
+      const soulteeUid = (req.params.soulteeUid || "").trim();
+      if (!soulteeUid) {
+        return res.status(400).json({ message: "soulteeUid is required" });
+      }
+
+      const bank = req.body?.bankAccount || {};
+      const setUpdate = {
+        "bankAccount.bankName": (bank.bankName || "").toString().trim(),
+        "bankAccount.accountNumber": (bank.accountNumber || "").toString().trim(),
+        "bankAccount.accountHolder": (bank.accountHolder || "").toString().trim(),
+        "bankAccount.branchName": (bank.branchName || "").toString().trim(),
+        "bankAccount.bankQrUrl": (bank.bankQrUrl || "").toString().trim(),
+        "bankAccount.updatedAt": bank.updatedAt ? new Date(bank.updatedAt) : new Date(),
+        esewaNumber: (req.body?.esewaNumber || "").toString().trim(),
+        esewaQrUrl: (req.body?.esewaQrUrl || "").toString().trim(),
+        khaltiNumber: (req.body?.khaltiNumber || "").toString().trim(),
+        khaltiQrUrl: (req.body?.khaltiQrUrl || "").toString().trim(),
+      };
+
+      const soultee = await Soultee.findOneAndUpdate(
+        { firebaseUid: soulteeUid },
+        { $set: setUpdate },
+        { new: true }
+      )
+        .select("firebaseUid name")
+        .lean();
+
+      if (!soultee) return res.status(404).json({ message: "Soultee not found" });
+
+      await writeAuditLog(req, {
+        action: "soultee_billing_restored",
+        resourceType: "soultee",
+        resourceId: soulteeUid,
+        resourceName: soultee.name || soulteeUid,
+        description: `Admin restored billing info for soultee ${soultee.name || soulteeUid}`,
+        severity: "info",
+      });
+
+      res.json({ success: true, message: "Billing info restored." });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
 // ── ADMIN — override any soultee's consultation fee ──────────────────────────
 // PATCH /api/admin/soultees/:soulteeUid/fee
 // Body: { feePerSession: Number, currency?: String }
