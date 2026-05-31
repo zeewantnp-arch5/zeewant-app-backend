@@ -104,11 +104,21 @@ app.use("/uploads", express.static(join(__dirname, "uploads")));
 
 app.get("/", (req, res) => res.send("Zeewant Backend Running..."));
 app.get("/health", (_req, res) => {
-  // readyState: 1 = connected, 2 = connecting, 3 = disconnecting, 0 = disconnected
   import("mongoose").then(({ default: mongoose }) => {
     const dbState = mongoose.connection.readyState;
     res.json({ status: "ok", db: dbState === 1 ? "connected" : "degraded", ts: Date.now() });
   }).catch(() => res.json({ status: "ok", db: "unknown", ts: Date.now() }));
+});
+
+// Debug endpoint — shows masked env vars so you can confirm Render picked them up
+app.get("/debug/env", (_req, res) => {
+  const mask = (v) => v ? `${v.slice(0, 6)}...${v.slice(-4)} (len=${v.length})` : "NOT SET";
+  res.json({
+    KHALTI_BASE_URL:   process.env.KHALTI_BASE_URL  || "NOT SET",
+    KHALTI_SECRET_KEY: mask(process.env.KHALTI_SECRET_KEY),
+    BACKEND_URL:       process.env.BACKEND_URL       || process.env.RENDER_EXTERNAL_URL || "NOT SET",
+    NODE_ENV:          process.env.NODE_ENV          || "NOT SET",
+  });
 });
 
 const PORT = process.env.PORT || 5000;
