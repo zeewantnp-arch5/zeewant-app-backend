@@ -18,9 +18,16 @@ async function activateSubscription(payment) {
   const soultee = await Soultee.findOne({ firebaseUid: payment.soulteeId })
     .select("durationMinutes")
     .lean();
-  const durationMinutes = Math.max(1, Number(soultee?.durationMinutes ?? 60));
+
+  // durationMinutes (e.g. 10) is the in-app chat session length shown in the UI.
+  // It is NOT used as the subscription expiry — doing so caused users to lose
+  // their paid session if they were logged out, had a network drop, or restarted
+  // the app within the window.
+  //
+  // Subscription access lasts 24 hours from payment. The 10-minute chat timer
+  // is enforced by the in-app session UI, not by backend subscription status.
   const expiryDate = new Date(startDate);
-  expiryDate.setMinutes(expiryDate.getMinutes() + durationMinutes);
+  expiryDate.setHours(expiryDate.getHours() + 24);
 
   await UserSubscription.create({
     userId:        payment.userId,

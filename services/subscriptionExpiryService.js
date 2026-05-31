@@ -25,30 +25,29 @@ export async function runSubscriptionExpiryJob() {
 // ── 2-day warning ─────────────────────────────────────────────────────────────
 
 async function _sendExpiryWarnings(now) {
-  const in48h = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+  // Warn users 2 hours before their 24-hour session access expires
+  const in2h = new Date(now.getTime() + 2 * 60 * 60 * 1000);
 
-  // Find active subscriptions expiring within the next 48 hours
-  // that have NOT had a warning sent yet — idempotent via warningSentAt flag
   const expiringSoon = await UserSubscription.find({
     status: "active",
-    expiryDate: { $gt: now, $lte: in48h },
+    expiryDate: { $gt: now, $lte: in2h },
     warningSentAt: { $exists: false },
   }).lean();
 
   if (!expiringSoon.length) return;
 
-  console.log(`[subscription-expiry] Sending 2-day warning to ${expiringSoon.length} user(s)`);
+  console.log(`[subscription-expiry] Sending 2-hour warning to ${expiringSoon.length} user(s)`);
 
   await Promise.allSettled(
     expiringSoon.map(async (sub) => {
-      const daysLeft = Math.max(
-        1,
-        Math.round((sub.expiryDate - now) / (24 * 60 * 60 * 1000))
-      );
+      const minsLeft = Math.max(1, Math.round((sub.expiryDate - now) / (60 * 1000)));
+      const timeLabel = minsLeft >= 60
+        ? `${Math.round(minsLeft / 60)} hour${Math.round(minsLeft / 60) !== 1 ? "s" : ""}`
+        : `${minsLeft} minute${minsLeft !== 1 ? "s" : ""}`;
 
       await sendPushNotification(sub.userId, {
-        title: "⚠️ Subscription Expiring Soon",
-        body: `Your ${sub.planName} plan will expire in ${daysLeft} day${daysLeft !== 1 ? "s" : ""}. Renew now to continue uninterrupted chat access.`,
+        title: "⚠️ Session Access Expiring Soon",
+        body: `Your chat access expires in ${timeLabel}. Open the app to continue your session.`,
         data: {
           type: "subscription_expiring",
           planName: sub.planName,
