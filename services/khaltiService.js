@@ -9,7 +9,7 @@ function _resolveKhaltiBaseUrl() {
 
   // Choose sensible defaults based on key type when base URL is not provided.
   if (KHALTI_SECRET_KEY.startsWith("test_secret_key_")) {
-    return "https://dev.khalti.com";
+    return "https://a.khalti.com";
   }
 
   return "https://khalti.com";
