@@ -19,6 +19,7 @@ import {
   getRoomMessageMetadata,
 } from "../services/messageService.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
+import Message from "../models/Message.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const chatUploadsDir = path.join(__dirname, "../uploads/chat");
@@ -74,10 +75,10 @@ export default function createChatRoutes(io) {
       });
 
       if (!link) {
+        console.warn(`[chat/history] room access denied — roomId=${req.params.roomId} userId=${userId} role=${userRole}`);
         return res.status(403).json({ message: "Room access denied" });
       }
 
-      const Message = (await import("../models/Message.js")).default;
       const messages = await Message
         .find({ roomId: req.params.roomId })
         .sort({ createdAt: -1 })
@@ -86,11 +87,13 @@ export default function createChatRoutes(io) {
         .lean();
 
       if (markRead && userId && userRole) {
-        await markRoomMessagesRead({ roomId: req.params.roomId, userId, userRole });
+        markRoomMessagesRead({ roomId: req.params.roomId, userId, userRole })
+          .catch(err => console.error("[chat/markRead] failed:", err.message));
       }
 
       res.json({ messages: messages.reverse().map(m => serializeMessage(m)), page });
     } catch (err) {
+      console.error(`[chat/history] error — roomId=${req.params.roomId}:`, err.message);
       res.status(500).json({ message: err.message });
     }
   });
@@ -123,6 +126,7 @@ export default function createChatRoutes(io) {
         allowPending,
       });
 
+      console.log(`[chat/save] ✓ msgId=${message._id} room=${req.params.roomId} from=${senderId}(${senderRole})`);
       const payload = serializeMessage(message);
       // 1. Deliver to anyone currently in the chat room (both sides if open).
       io.to(req.params.roomId).emit("new_message", payload);
