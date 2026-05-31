@@ -1,6 +1,11 @@
 const KHALTI_SECRET_KEY = (process.env.KHALTI_SECRET_KEY || "").trim();
 const KHALTI_BASE_URL = (process.env.KHALTI_BASE_URL || "").trim();
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:5000";
+// Render auto-injects RENDER_EXTERNAL_URL; fall back to BACKEND_URL for local dev.
+const BACKEND_URL = (
+  process.env.BACKEND_URL ||
+  process.env.RENDER_EXTERNAL_URL ||
+  "http://localhost:5000"
+).trim().replace(/\/+$/, "");
 
 function _resolveKhaltiBaseUrl() {
   if (KHALTI_BASE_URL) {
@@ -51,8 +56,11 @@ export async function initiateKhaltiPayment({ amount, transactionUuid, planDispl
 
   const khaltiBaseUrl = _resolveKhaltiBaseUrl();
 
+  const returnUrl = `${BACKEND_URL}/api/payments/khalti/callback`;
+  console.log(`[Khalti] initiating — amount=${amountInPaisa} paisa, return_url=${returnUrl}`);
+
   const body = {
-    return_url: `${BACKEND_URL}/api/payments/khalti/callback`,
+    return_url: returnUrl,
     website_url: BACKEND_URL,
     amount: amountInPaisa,
     purchase_order_id: transactionUuid,
