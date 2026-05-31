@@ -123,11 +123,14 @@ export default function createChatRoutes(io) {
       });
 
       const payload = serializeMessage(message);
-      // Deliver to anyone currently in the chat room (both sides if open).
+      // 1. Deliver to anyone currently in the chat room (both sides if open).
       io.to(req.params.roomId).emit("new_message", payload);
-      // Also push directly to the recipient's personal room so their global
-      // socket refreshes the session list even when they are not in the chat screen.
+      // 2. Push to recipient's personal room so their global socket refreshes
+      //    the session list even when they are not in the chat screen.
       io.to(buildPersonalRoom(recipientRole, recipientUid)).emit("new_message", payload);
+      // 3. Push to sender's personal room as well — ensures the sender's socket
+      //    gets the echo even if join_room hasn't been confirmed yet (race condition).
+      io.to(buildPersonalRoom(senderRole, senderId)).emit("new_message", payload);
       // Legacy badge/unread event kept for any listeners that still use it.
       io.to(buildPersonalRoom(recipientRole, recipientUid)).emit("message_unread", {
         roomId: req.params.roomId,
@@ -200,6 +203,7 @@ export default function createChatRoutes(io) {
       const payload = serializeMessage(message);
       io.to(req.params.roomId).emit("new_message", payload);
       io.to(buildPersonalRoom(recipientRole, recipientUid)).emit("new_message", payload);
+      io.to(buildPersonalRoom(senderRole, senderId)).emit("new_message", payload);
       io.to(buildPersonalRoom(recipientRole, recipientUid)).emit("message_unread", {
         roomId: req.params.roomId,
         message: payload,

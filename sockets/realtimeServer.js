@@ -158,9 +158,11 @@ async function validateRoomAccess(roomId, userId, userRole) {
     return null;
   }
 
+  // Allow both "active" and "pending" links — consistent with the HTTP chat
+  // routes that use allowPending: true.
   const link = await StudentSoulteeLink.findOne({
     _id: roomId,
-    status: "active",
+    status: { $in: ["active", "pending"] },
   })
     .select("studentFirebaseUid soulteeFirebaseUid status")
     .lean();
