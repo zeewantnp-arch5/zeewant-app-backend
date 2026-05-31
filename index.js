@@ -47,6 +47,10 @@ const httpServer = createServer(app);
 // ─── Socket.io ────────────────────────────────────────────────────────────────
 const io = new Server(httpServer, {
   cors: { origin: "*", methods: ["GET", "POST"] },
+  // Increase timeouts so a Render cold-start (30-45 s) doesn't drop the socket
+  // before the client can finish the handshake.
+  pingTimeout: 60000,
+  pingInterval: 25000,
 });
 registerRealtimeServer(io);
 registerAnalyticsNamespace(io);
@@ -106,7 +110,9 @@ async function startServer() {
 
     // Render free tier sleeps after 15 min of inactivity.
     // Ping own external URL every 14 min to stay awake.
-    const selfUrl = process.env.RENDER_EXTERNAL_URL;
+    // RENDER_EXTERNAL_URL is auto-injected by Render; fall back to BACKEND_URL
+    // so the keep-alive works even if the env var name differs.
+    const selfUrl = process.env.RENDER_EXTERNAL_URL || process.env.BACKEND_URL;
     if (selfUrl) {
       setInterval(() => {
         fetch(`${selfUrl}/health`)
