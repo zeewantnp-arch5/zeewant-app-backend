@@ -1,0 +1,80 @@
+# ─── Secrets & credentials ───────────────────────────────────────────────────
+.env
+.env.*
+.env.local
+.env.production
+.env.staging
+!.env.example
+
+# Firebase service account private keys
+firebase-service-account.json
+*-service-account.json
+*-credentials.json
+serviceAccountKey.json
+
+# SSL / TLS certificates
+*.pem
+*.key
+*.crt
+*.cert
+*.p12
+*.pfx
+
+# ─── Dependencies ─────────────────────────────────────────────────────────────
+node_modules/
+package-lock.json.bak
+
+# ─── Uploads (ephemeral — lost on every Render redeploy) ─────────────────────
+uploads/
+tmp/
+temp/
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# ─── Build / compiled output ──────────────────────────────────────────────────
+dist/
+build/
+.cache/
+.parcel-cache/
+
+# ─── Runtime & process ────────────────────────────────────────────────────────
+.node_repl_history
+*.tgz
+
+# ─── Editor & IDE ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ─── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ─── Testing & coverage ───────────────────────────────────────────────────────
+coverage/
+.nyc_output/
+.jest-cache/
+
+# ─── Render / deployment ──────────────────────────────────────────────────────
+.render/
+render-build.sh
