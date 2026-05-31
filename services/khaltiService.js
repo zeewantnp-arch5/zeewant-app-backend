@@ -67,15 +67,23 @@ export async function initiateKhaltiPayment({ amount, transactionUuid, planDispl
     purchase_order_name: `Zeewant ${planDisplayName}`,
   };
 
-  const response = await fetch(`${khaltiBaseUrl}/api/v2/epayment/initiate/`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Key ${KHALTI_SECRET_KEY}`,
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(20000), // 20 s — fail fast if Khalti is unresponsive
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+  let response;
+  try {
+    response = await fetch(`${khaltiBaseUrl}/api/v2/epayment/initiate/`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Key ${KHALTI_SECRET_KEY}`,
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!response.ok) {
     const err = await _readKhaltiError(response);
@@ -83,6 +91,7 @@ export async function initiateKhaltiPayment({ amount, transactionUuid, planDispl
   }
 
   const data = await response.json();
+  console.log(`[Khalti] initiated — pidx=${data.pidx}`);
   return { pidx: data.pidx, paymentUrl: data.payment_url };
 }
 
@@ -93,15 +102,23 @@ export async function verifyKhaltiPayment(pidx) {
   _assertKhaltiConfig();
 
   const khaltiBaseUrl = _resolveKhaltiBaseUrl();
-  const response = await fetch(`${khaltiBaseUrl}/api/v2/epayment/lookup/`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Key ${KHALTI_SECRET_KEY}`,
-    },
-    body: JSON.stringify({ pidx }),
-    signal: AbortSignal.timeout(15000), // 15 s timeout
-  });
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), 15000);
+
+  let response;
+  try {
+    response = await fetch(`${khaltiBaseUrl}/api/v2/epayment/lookup/`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Key ${KHALTI_SECRET_KEY}`,
+      },
+      body: JSON.stringify({ pidx }),
+      signal: ctrl.signal,
+    });
+  } finally {
+    clearTimeout(tid);
+  }
 
   if (!response.ok) {
     const err = await _readKhaltiError(response);
