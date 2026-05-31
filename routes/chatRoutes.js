@@ -16,6 +16,7 @@ import {
   getMessageStatus,
   markRoomMessagesDelivered,
   serializeMessage,
+  getRoomMessageMetadata,
 } from "../services/messageService.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 
@@ -356,7 +357,6 @@ export default function createChatRoutes(io) {
         .lean();
 
       // Enrich with message metadata
-      const { getRoomMessageMetadata } = await import("../services/messageService.js");
       const roomIds = sessions.map(s => String(s._id));
       const metadataByRoom = await getRoomMessageMetadata({
         roomIds,
@@ -403,7 +403,6 @@ export default function createChatRoutes(io) {
         .lean();
 
       // Enrich with message metadata
-      const { getRoomMessageMetadata } = await import("../services/messageService.js");
       const roomIds = requests.map(r => String(r._id));
       const metadataByRoom = await getRoomMessageMetadata({
         roomIds,

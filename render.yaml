@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: zeewant-app-backend
+    env: node
+    region: singapore
+    plan: starter          # change to "free" if you're on the free tier
+    buildCommand: npm install
+    startCommand: node index.js   # never use nodemon in production
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      # Set these in the Render dashboard (not here) so secrets are not committed:
+      # MONGO_URI, RENDER_EXTERNAL_URL (auto-set by Render), BACKEND_URL

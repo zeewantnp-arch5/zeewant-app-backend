@@ -114,6 +114,7 @@ export async function markRoomMessagesRead({ roomId, userId, userRole }) {
     return 0;
   }
 
+  const now = new Date();
   const result = await Message.updateMany(
     {
       roomId,
@@ -122,7 +123,7 @@ export async function markRoomMessagesRead({ roomId, userId, userRole }) {
       readAt: null,
     },
     {
-      $set: { readAt: new Date() },
+      $set: { status: "read", readAt: now },
     }
   );
 
