@@ -74,6 +74,7 @@ export async function initiateKhaltiPayment({ amount, transactionUuid, planDispl
       Authorization: `Key ${KHALTI_SECRET_KEY}`,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(20000), // 20 s — fail fast if Khalti is unresponsive
   });
 
   if (!response.ok) {
@@ -99,6 +100,7 @@ export async function verifyKhaltiPayment(pidx) {
       Authorization: `Key ${KHALTI_SECRET_KEY}`,
     },
     body: JSON.stringify({ pidx }),
+    signal: AbortSignal.timeout(15000), // 15 s timeout
   });
 
   if (!response.ok) {
