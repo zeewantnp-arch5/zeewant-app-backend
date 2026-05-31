@@ -17,14 +17,18 @@ import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
  */
 export async function requireSubscription(req, res, next) {
   try {
+    // req.body is undefined on GET/DELETE requests (no JSON body sent).
+    // Always default to {} to avoid "Cannot read properties of undefined" crashes.
+    const body = req.body ?? {};
+
     const userId =
-      req.body.senderId ||
+      body.senderId ||
       req.query.userId ||
       req.params.userUid ||
       req.params.userId;
 
     const userRole =
-      req.body.senderRole ||
+      body.senderRole ||
       req.query.userRole ||
       req.params.userRole;
 
@@ -40,7 +44,7 @@ export async function requireSubscription(req, res, next) {
 
     // Resolve soulteeId — prefer room lookup so client doesn't have to send it
     let soulteeId =
-      req.body.soulteeId ||
+      body.soulteeId ||
       req.query.soulteeId;
 
     if (!soulteeId && req.params.roomId) {
