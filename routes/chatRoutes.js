@@ -109,20 +109,32 @@ export default function createChatRoutes(io) {
         type = "text",
         callType = null,
         allowPending = false,
+        attachmentUrl = null,
+        attachmentName = null,
+        attachmentMimeType = null,
       } = req.body;
 
-      if (!senderId || !senderRole || !String(text || "").trim()) {
-        return res.status(400).json({ message: "senderId, senderRole, and text are required" });
+      // For attachment messages the text may be the filename, so only require
+      // non-empty text when there is also no attachment URL.
+      const hasText = String(text || "").trim().length > 0;
+      const hasAttachment = attachmentUrl && String(attachmentUrl).trim().length > 0;
+      if (!senderId || !senderRole || (!hasText && !hasAttachment)) {
+        return res.status(400).json({ message: "senderId, senderRole, and text or attachmentUrl are required" });
       }
+
+      const attachment = hasAttachment
+        ? { url: attachmentUrl, name: attachmentName || null, mimeType: attachmentMimeType || null }
+        : null;
 
       const { message, recipientUid, recipientRole } = await createPersistentMessage({
         roomId: req.params.roomId,
         senderId,
         senderName,
         senderRole,
-        text,
+        text: hasText ? text : (attachmentName || type),
         type,
         callType: callType || null,
+        attachment,
         allowPending,
       });
 
