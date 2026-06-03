@@ -1,4 +1,5 @@
 import Message from "../models/Message.js";
+import Session from "../models/Session.js";
 import Soultee from "../models/Soultee.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import admin from "../config/firebase.js";
@@ -507,7 +508,7 @@ export function registerRealtimeServer(io) {
       }
 
       try {
-        await markCallEnded(callEventId);
+        const callEvent = await markCallEnded(callEventId);
         await logSystemCallMessage({
           io,
           roomId,
@@ -520,6 +521,36 @@ export function registerRealtimeServer(io) {
             actorName: socket.data.userName,
           }),
         });
+
+        // Auto-create a completed Session record so soultee's Session History populates
+        if (callEvent && callEvent.answeredAt) {
+          const soulteeId = callEvent.callerRole === "soultee"
+            ? callEvent.callerId
+            : callEvent.receiverId;
+          const studentId = callEvent.callerRole === "student"
+            ? callEvent.callerId
+            : callEvent.receiverId;
+          const sessionType = callEvent.callType === "video" ? "video" : "voice";
+          const durationMinutes = Math.max(1, Math.round((callEvent.durationSec || 0) / 60));
+
+          // Fetch studentName from the link (roomId = StudentSoulteeLink._id)
+          StudentSoulteeLink.findById(roomId).lean()
+            .then((link) => {
+              const studentName = link?.studentName
+                || (callEvent.callerRole === "student" ? callEvent.callerName : null)
+                || "Student";
+              return Session.create({
+                soulteeFirebaseUid: soulteeId,
+                studentFirebaseUid: studentId,
+                studentName,
+                scheduledAt: callEvent.answeredAt,
+                durationMinutes,
+                sessionType,
+                status: "completed",
+              });
+            })
+            .catch(() => {});
+        }
       } catch (err) {
         emitSocketError(socket, err.message, { roomId });
       }

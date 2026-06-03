@@ -1,7 +1,91 @@
 import express from "express";
 import mongoose from "mongoose";
+import Anthropic from "@anthropic-ai/sdk";
 import Souljar from "../models/souljar.js";
 import { emitSouljarAnalyticsUpdate } from "../sockets/analyticsNamespace.js";
+
+// ─── Soulway AI system prompt (cached — does not change per request) ──────────
+const SOULWAY_SYSTEM_PROMPT = `You are Soulway AI, the emotional intelligence companion of Zeewant.
+Your purpose is to help people understand what their emotions are trying to tell them.
+Analyze all Souljar entries, mood logs, reflections, voice notes, and emotional check-ins.
+Do not focus only on what the user says. Look deeper.
+
+Think like:
+- A psychologist looking for patterns
+- A coach looking for growth opportunities
+- A friend listening without judgment
+- A mentor helping someone find their path
+
+Your report must feel personal, insightful, compassionate, and life-changing.
+
+ALWAYS return your response as a single valid JSON object — no markdown, no extra text, no code fences.
+
+The JSON must match this exact structure:
+{
+  "emotionalPatterns": [
+    {
+      "patternName": "string",
+      "description": "string",
+      "evidence": "string",
+      "emotionalImpact": "string",
+      "lifeImpact": "string"
+    }
+  ],
+  "emotionalTriggers": [
+    {
+      "trigger": "string",
+      "emotion": "string",
+      "behavior": "string",
+      "deeperFear": "string",
+      "rank": 1
+    }
+  ],
+  "emotionalThemes": [
+    {
+      "theme": "string",
+      "evidence": "string",
+      "emotionalStory": "string"
+    }
+  ],
+  "emotionalNeeds": [
+    {
+      "need": "string",
+      "evidence": "string",
+      "howItAffects": "string",
+      "howToFulfill": "string"
+    }
+  ],
+  "emotionalDirection": {
+    "whatEmotionsSay": "string",
+    "whatNeedsAttention": "string",
+    "smallStepsThisWeek": ["string", "string", "string"],
+    "growthStepsThisMonth": ["string", "string", "string"],
+    "longTermGrowth": ["string", "string", "string"],
+    "hiddenStrengths": ["string", "string"],
+    "soulmessage": "string"
+  },
+  "truthBeneathEmotions": {
+    "deepestFear": "string",
+    "avoiding": "string",
+    "painfulBelief": "string",
+    "emotionalWound": "string",
+    "needsHealing": "string",
+    "needsCelebrating": "string"
+  },
+  "scorecard": {
+    "selfAwareness": 72,
+    "selfAwarenessExplanation": "string",
+    "emotionalBalance": 58,
+    "emotionalBalanceExplanation": "string",
+    "stressLoad": 65,
+    "stressLoadExplanation": "string",
+    "connection": 50,
+    "connectionExplanation": "string",
+    "growthReadiness": 80,
+    "growthReadinessExplanation": "string"
+  },
+  "finalSummary": "string"
+}`;
 
 const router = express.Router();
 
@@ -615,6 +699,80 @@ router.get("/insight/:userId", async (req, res) => {
 
     res.json({ insight: message });
   } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+///////////////////////////////////////////////////////////
+// 🤖 SOULWAY AI DEEP EMOTIONAL REPORT
+///////////////////////////////////////////////////////////
+
+router.get("/soulway-ai-report/:userId", async (req, res) => {
+  try {
+    const entries = await Souljar.find({ userId: req.params.userId })
+      .sort({ createdAt: -1 })
+      .limit(60);
+
+    if (entries.length === 0) {
+      return res.status(200).json({
+        success: false,
+        noEntries: true,
+        message: "No Souljar entries found. Start writing in your Souljar first.",
+      });
+    }
+
+    const entriesText = entries
+      .map((e, i) => {
+        const parts = [];
+        const dateStr = e.stamp || (e.createdAt ? e.createdAt.toISOString().split("T")[0] : "unknown");
+        parts.push(`Date: ${dateStr}`);
+        if (e.topic) parts.push(`Category: ${e.topic}`);
+        if (e.mood) parts.push(`Mood: ${e.mood}`);
+        if (e.activity) parts.push(`Activity/Trigger: ${e.activity}`);
+        if (e.wordCount) parts.push(`Words written: ${e.wordCount}`);
+        const entryText = (e.text || e.ocrText || "").substring(0, 600);
+        if (entryText) parts.push(`Entry: ${entryText}`);
+        return `[Entry ${i + 1}]\n${parts.join("\n")}`;
+      })
+      .join("\n\n---\n\n");
+
+    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+    const userMessage = `Here are the user's Souljar entries (${entries.length} total entries across their emotional journey):\n\n${entriesText}\n\nNow silently answer: Who is this person becoming? What emotional struggle appears most often? What are they avoiding? What do they secretly need? What emotional strength exists inside them?\n\nThen generate the complete Soulway Report as a JSON object following the structure in your instructions. Be deeply personal, compassionate, and insightful. Return ONLY the JSON object.`;
+
+    const message = await anthropic.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 4096,
+      system: [
+        {
+          type: "text",
+          text: SOULWAY_SYSTEM_PROMPT,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      messages: [{ role: "user", content: userMessage }],
+    });
+
+    const rawText = message.content[0].text.trim();
+    // Strip any accidental markdown fences
+    const jsonText = rawText.replace(/^```(?:json)?\n?/i, "").replace(/\n?```$/i, "");
+
+    let report;
+    try {
+      report = JSON.parse(jsonText);
+    } catch (_parseErr) {
+      console.error("Soulway AI JSON parse failed:", jsonText.slice(0, 300));
+      return res.status(500).json({ message: "AI returned invalid JSON. Please try again." });
+    }
+
+    res.json({
+      success: true,
+      entryCount: entries.length,
+      generatedAt: new Date().toISOString(),
+      report,
+    });
+  } catch (error) {
+    console.error("Soulway AI Report Error:", error);
     res.status(500).json({ message: error.message });
   }
 });

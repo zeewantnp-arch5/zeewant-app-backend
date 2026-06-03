@@ -737,17 +737,32 @@ export default function createSoulteeDashboardRoutes(io) {
   // ───────────────────────────────────────────────────────────────────────────
   router.patch("/:soulteeUid/students/:studentUid/end", async (req, res) => {
     try {
+      const now = new Date();
       const link = await StudentSoulteeLink.findOneAndUpdate(
         {
           soulteeFirebaseUid: req.params.soulteeUid,
           studentFirebaseUid: req.params.studentUid,
           status: "active",
         },
-        { status: "ended", endedAt: new Date() },
+        { status: "ended", endedAt: now },
         { new: true }
       );
 
       if (!link) return res.status(404).json({ message: "Active link not found" });
+
+      // Auto-create a completed chat Session so soultee's Session History populates
+      const sessionStart = link.acceptedAt || link.requestedAt || now;
+      const durationMinutes = Math.max(1, Math.round((now - new Date(sessionStart)) / 60000));
+      Session.create({
+        soulteeFirebaseUid: req.params.soulteeUid,
+        studentFirebaseUid: req.params.studentUid,
+        studentName: link.studentName || "Student",
+        scheduledAt: sessionStart,
+        durationMinutes,
+        sessionType: "chat",
+        status: "completed",
+      }).catch(() => {});
+
       res.json({ message: "Student unlinked", link });
     } catch (err) {
       res.status(500).json({ message: err.message });
