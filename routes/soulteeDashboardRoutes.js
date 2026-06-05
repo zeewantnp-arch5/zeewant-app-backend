@@ -1181,6 +1181,60 @@ export default function createSoulteeDashboardRoutes(io) {
   });
 
   // ───────────────────────────────────────────────────────────────────────────
+  //  NOTIFY STUDENTS — I'M AVAILABLE NOW
+  //  POST /api/soultee-dashboard/:soulteeUid/notify-available
+  //  Sends a real FCM push to every student linked to this soultee.
+  // ───────────────────────────────────────────────────────────────────────────
+  router.post("/:soulteeUid/notify-available", async (req, res) => {
+    try {
+      const { soulteeUid } = req.params;
+
+      const soultee = await Soultee.findOne({ firebaseUid: soulteeUid })
+        .select("name profileImage")
+        .lean();
+      const soulteeName  = soultee?.name || "Your Soultee";
+      const profileImage = soultee?.profileImage || "";
+
+      // All students who have an active or pending link with this soultee
+      const links = await StudentSoulteeLink.find({
+        soulteeFirebaseUid: soulteeUid,
+        status: { $in: ["active", "pending"] },
+      }).select("studentFirebaseUid studentName").lean();
+
+      if (!links.length) {
+        return res.json({ message: "No connected students to notify.", notified: 0 });
+      }
+
+      const title = `${soulteeName} is Available Now 🟢`;
+      const body  = "Your Soultee is online and ready for counselling. Tap to connect!";
+
+      let notified = 0;
+      await Promise.all(
+        links.map(async (link) => {
+          try {
+            const result = await sendPushNotification(link.studentFirebaseUid, {
+              title,
+              body,
+              data: {
+                type:        "soultee_available",
+                soulteeId:   soulteeUid,
+                soulteeName,
+                profileImage,
+                screen:      "soultee_search",
+              },
+            });
+            if (result?.messagesSent > 0 || result?.success) notified++;
+          } catch (_) {}
+        })
+      );
+
+      res.json({ message: `${notified} student(s) notified.`, notified, total: links.length });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
   //  ACTIVE SESSION
   //  GET /api/soultee-dashboard/:soulteeUid/active-session
   //  Returns the current ongoing session (or null).
