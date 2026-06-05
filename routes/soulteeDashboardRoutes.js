@@ -779,18 +779,35 @@ export default function createSoulteeDashboardRoutes(io) {
 
       if (!link) return res.status(404).json({ message: "Active link not found" });
 
-      // Auto-create a completed chat Session so soultee's Session History populates
       const sessionStart = link.acceptedAt || link.requestedAt || now;
       const durationMinutes = Math.max(1, Math.round((now - new Date(sessionStart)) / 60000));
-      Session.create({
-        soulteeFirebaseUid: req.params.soulteeUid,
-        studentFirebaseUid: req.params.studentUid,
-        studentName: link.studentName || "Student",
-        scheduledAt: sessionStart,
-        durationMinutes,
-        sessionType: "chat",
-        status: "completed",
-      }).catch(() => {});
+
+      // Complete existing payment session if one exists, otherwise create a new record
+      const completedExisting = await Session.findOneAndUpdate(
+        {
+          soulteeFirebaseUid: req.params.soulteeUid,
+          studentFirebaseUid: req.params.studentUid,
+          status: { $in: ["upcoming", "ongoing"] },
+          sessionFee: { $gt: 0 },
+        },
+        { $set: { status: "completed", sessionType: "chat", durationMinutes, scheduledAt: sessionStart } },
+        { new: true, sort: { createdAt: -1 } }
+      );
+
+      if (!completedExisting) {
+        Session.create({
+          soulteeFirebaseUid: req.params.soulteeUid,
+          studentFirebaseUid: req.params.studentUid,
+          studentName: link.studentName || "Student",
+          scheduledAt: sessionStart,
+          durationMinutes,
+          sessionType: "chat",
+          status: "completed",
+        }).catch(() => {});
+      }
+
+      // Refresh soultee dashboard stats
+      io.to(`soultee:${req.params.soulteeUid}`).emit("stats:updated");
 
       res.json({ message: "Student unlinked", link });
     } catch (err) {
@@ -1334,6 +1351,9 @@ export default function createSoulteeDashboardRoutes(io) {
       io.to(`session:${req.params.sessionId}`).emit("session:completed", {
         sessionId: req.params.sessionId,
       });
+
+      // Push real-time dashboard refresh to the soultee
+      io.to(`soultee:${req.params.soulteeUid}`).emit("stats:updated");
 
       res.json({ session, soulteeEarnings, platformEarnings });
     } catch (err) {

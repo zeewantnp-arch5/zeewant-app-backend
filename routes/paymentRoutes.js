@@ -3,6 +3,7 @@ import crypto from "crypto";
 import Payment from "../models/Payment.js";
 import Soultee from "../models/Soultee.js";
 import UserSubscription from "../models/UserSubscription.js";
+import Session from "../models/Session.js";
 import { buildEsewaFormParams, verifyEsewaCallback } from "../services/esewaService.js";
 import { initiateKhaltiPayment, verifyKhaltiPayment } from "../services/khaltiService.js";
 import { sendPushNotification } from "../services/fcmService.js";
@@ -13,10 +14,10 @@ const router = express.Router();
 //  HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function activateSubscription(payment) {
+async function activateSubscription(payment, io = null) {
   const startDate = new Date();
   const soultee = await Soultee.findOne({ firebaseUid: payment.soulteeId })
-    .select("durationMinutes")
+    .select("durationMinutes feePerSession")
     .lean();
 
   // durationMinutes (e.g. 10) is the in-app chat session length shown in the UI.
@@ -43,6 +44,26 @@ async function activateSubscription(payment) {
     expiryDate,
   });
 
+  // Create an upcoming session so "Earnings To Be Received" shows immediately
+  try {
+    await Session.create({
+      soulteeFirebaseUid: payment.soulteeId,
+      studentFirebaseUid: payment.userId,
+      scheduledAt:    new Date(),
+      durationMinutes: soultee?.durationMinutes || 30,
+      sessionFee:     payment.amount,
+      sessionType:    "chat",
+      status:         "upcoming",
+    });
+  } catch (err) {
+    console.error("[activateSubscription] Session create error:", err.message);
+  }
+
+  // Notify soultee dashboard to refresh stats in real-time
+  if (io) {
+    io.to(`soultee:${payment.soulteeId}`).emit("stats:updated");
+  }
+
   const expiryStr = expiryDate.toLocaleString("en-US", {
     day: "numeric", month: "long", year: "numeric",
     hour: "numeric", minute: "2-digit",
@@ -68,7 +89,7 @@ const KHALTI_FAILED_STATUSES = new Set([
   "Partially refunded",
 ]);
 
-async function reconcileKhaltiPayment(payment) {
+async function reconcileKhaltiPayment(payment, io = null) {
   if (!payment?.khaltiPidx) {
     return { status: payment?.status || "pending" };
   }
@@ -90,7 +111,7 @@ async function reconcileKhaltiPayment(payment) {
     );
 
     if (completedPayment) {
-      await activateSubscription(completedPayment);
+      await activateSubscription(completedPayment, io);
       return { status: "completed", payment: completedPayment, lookup };
     }
 
@@ -369,7 +390,7 @@ router.post("/esewa/activate", async (req, res) => {
       return res.json({ success: true, message: "Already activated" });
     }
 
-    await activateSubscription(payment);
+    await activateSubscription(payment, req.app.get("io"));
     res.json({ success: true, message: "Subscription activated" });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -441,7 +462,7 @@ router.post("/esewa/sdk-verify", async (req, res) => {
       return res.json({ success: true, message: "Already activated" });
     }
 
-    await activateSubscription(payment);
+    await activateSubscription(payment, req.app.get("io"));
     res.json({ success: true, message: "Subscription activated" });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -478,7 +499,7 @@ router.get("/khalti/callback", async (req, res) => {
       return _khaltiResultPage(res, true);
     }
 
-    const result = await reconcileKhaltiPayment(payment);
+    const result = await reconcileKhaltiPayment(payment, req.app.get("io"));
 
     if (result.status === "completed") {
       return _khaltiResultPage(res, true);
@@ -517,7 +538,7 @@ router.get("/verify/:transactionUuid", async (req, res) => {
     if (!payment) return res.status(404).json({ message: "Payment not found" });
 
     if (payment.method === "khalti" && payment.status === "pending" && payment.khaltiPidx) {
-      const result = await reconcileKhaltiPayment(payment);
+      const result = await reconcileKhaltiPayment(payment, req.app.get("io"));
       payment = (result.payment || payment);
       payment.status = result.status;
     }
@@ -602,7 +623,7 @@ router.post("/esewa/recover", async (req, res) => {
       return res.json({ success: true, message: "Already activated" });
     }
 
-    await activateSubscription(updated);
+    await activateSubscription(updated, req.app.get("io"));
     res.json({ success: true, message: "Subscription activated via recovery" });
   } catch (err) {
     res.status(500).json({ message: err.message });

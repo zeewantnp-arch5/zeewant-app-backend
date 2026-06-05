@@ -522,7 +522,7 @@ export function registerRealtimeServer(io) {
           }),
         });
 
-        // Auto-create a completed Session record so soultee's Session History populates
+        // Complete session record when call ends
         if (callEvent && callEvent.answeredAt) {
           const soulteeId = callEvent.callerRole === "soultee"
             ? callEvent.callerId
@@ -533,21 +533,40 @@ export function registerRealtimeServer(io) {
           const sessionType = callEvent.callType === "video" ? "video" : "voice";
           const durationMinutes = Math.max(1, Math.round((callEvent.durationSec || 0) / 60));
 
-          // Fetch studentName from the link (roomId = StudentSoulteeLink._id)
           StudentSoulteeLink.findById(roomId).lean()
-            .then((link) => {
+            .then(async (link) => {
               const studentName = link?.studentName
                 || (callEvent.callerRole === "student" ? callEvent.callerName : null)
                 || "Student";
-              return Session.create({
-                soulteeFirebaseUid: soulteeId,
-                studentFirebaseUid: studentId,
-                studentName,
-                scheduledAt: callEvent.answeredAt,
-                durationMinutes,
-                sessionType,
-                status: "completed",
-              });
+
+              // Reuse existing payment session if one exists so earningsToBeReceived → 0
+              const updated = await Session.findOneAndUpdate(
+                {
+                  soulteeFirebaseUid: soulteeId,
+                  studentFirebaseUid: studentId,
+                  status: { $in: ["upcoming", "ongoing"] },
+                  sessionFee: { $gt: 0 },
+                },
+                { $set: { status: "completed", sessionType, durationMinutes, scheduledAt: callEvent.answeredAt } },
+                { new: true, sort: { createdAt: -1 } }
+              );
+
+              if (!updated) {
+                // No payment session — create new record with soultee's current fee
+                const slt = await Soultee.findOne({ firebaseUid: soulteeId }).select("feePerSession").lean();
+                await Session.create({
+                  soulteeFirebaseUid: soulteeId,
+                  studentFirebaseUid: studentId,
+                  studentName,
+                  scheduledAt: callEvent.answeredAt,
+                  durationMinutes,
+                  sessionType,
+                  sessionFee: slt?.feePerSession || 0,
+                  status: "completed",
+                });
+              }
+
+              io.to(`soultee:${soulteeId}`).emit("stats:updated");
             })
             .catch(() => {});
         }
