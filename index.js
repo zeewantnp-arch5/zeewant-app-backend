@@ -35,7 +35,9 @@ import callRoutes from "./routes/callRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
 import subscriptionRoutes from "./routes/subscriptionRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
+import featureSubscriptionRoutes from "./routes/featureSubscriptionRoutes.js";
 import { runSubscriptionExpiryJob } from "./services/subscriptionExpiryService.js";
+import { runFeatureExpiryJob } from "./services/featureExpiryService.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -97,8 +99,9 @@ app.use("/api/emotional-prescription", emotionalPrescriptionRoutes);
 app.use("/api/soulmeter",            soulMeterRoutes);
 app.use("/api/calls",                callRoutes);
 app.use("/api/auth",                 authRoutes);
-app.use("/api/subscriptions",        subscriptionRoutes);
-app.use("/api/payments",             paymentRoutes);
+app.use("/api/subscriptions",         subscriptionRoutes);
+app.use("/api/payments",              paymentRoutes);
+app.use("/api/feature-subscriptions", featureSubscriptionRoutes);
 app.use(express.static(join(__dirname, "public")));
 app.use("/uploads", express.static(join(__dirname, "uploads")));
 
@@ -132,6 +135,10 @@ async function startServer() {
   // Run subscription expiry job immediately on startup, then every 6 hours
   runSubscriptionExpiryJob();
   setInterval(runSubscriptionExpiryJob, 6 * 60 * 60 * 1000);
+
+  // Feature subscription expiry + notifications: immediately, then every 12 hours
+  runFeatureExpiryJob();
+  setInterval(runFeatureExpiryJob, 12 * 60 * 60 * 1000);
 
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`🚀 Server running on port ${PORT}`);
