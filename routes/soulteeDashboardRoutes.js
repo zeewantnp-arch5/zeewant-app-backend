@@ -4,6 +4,8 @@ import SoulteeFeedback from "../models/SoulteeFeedback.js";
 import admin from "../config/firebase.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import Session from "../models/Session.js";
+import SessionWallet from "../models/SessionWallet.js";
+import SessionWithdrawal from "../models/SessionWithdrawal.js";
 import Souljar from "../models/souljar.js";
 import Soulpana from "../models/Soulpana.js";
 import { getStudentConnections } from "../services/connectionService.js";
@@ -14,6 +16,8 @@ import {
 } from "../services/messageService.js";
 import { createNotification, emitToUser } from "../services/notificationService.js";
 import { syncProfileToRTDB } from "../config/firebase.js";
+
+const PLATFORM_COMMISSION_RATE = 20; // 20% platform fee
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Factory — receives io so every route handler can emit socket events
@@ -256,8 +260,12 @@ export default function createSoulteeDashboardRoutes(io) {
   router.get("/:soulteeUid/stats", async (req, res) => {
     try {
       const { soulteeUid } = req.params;
+      const now = new Date();
+      const todayStart  = new Date(now); todayStart.setHours(0,0,0,0);
+      const todayEnd    = new Date(now); todayEnd.setHours(23,59,59,999);
+      const monthStart  = new Date(now.getFullYear(), now.getMonth(), 1);
 
-      const [soultee, activeStudents, pendingRequests, todaySessions, upcomingSessions] =
+      const [soultee, activeStudents, pendingRequests, todaySessions, upcomingSessions, wallet] =
         await Promise.all([
           Soultee.findOne({ firebaseUid: soulteeUid })
             .select("rating totalFeedbacks feePerSession")
@@ -267,82 +275,103 @@ export default function createSoulteeDashboardRoutes(io) {
           Session.countDocuments({
             soulteeFirebaseUid: soulteeUid,
             status: { $in: ["upcoming", "ongoing"] },
-            scheduledAt: {
-              $gte: new Date(new Date().setHours(0, 0, 0, 0)),
-              $lte: new Date(new Date().setHours(23, 59, 59, 999)),
-            },
+            scheduledAt: { $gte: todayStart, $lte: todayEnd },
           }),
           Session.countDocuments({
             soulteeFirebaseUid: soulteeUid,
             status: "upcoming",
-            scheduledAt: { $gte: new Date() },
+            scheduledAt: { $gte: now },
           }),
+          SessionWallet.findOne({ soulteeFirebaseUid: soulteeUid }).lean(),
         ]);
 
-      const defaultSessionFee = Number(soultee?.feePerSession || 0);
+      const defaultFee = Number(soultee?.feePerSession || 0);
 
-      const [earningsSummary] = await Session.aggregate([
-        {
-          $match: {
-            soulteeFirebaseUid: soulteeUid,
-            status: { $in: ["upcoming", "ongoing", "completed"] },
-          },
-        },
+      // ── Full earnings aggregate ───────────────────────────────────────────
+      const [agg] = await Session.aggregate([
+        { $match: { soulteeFirebaseUid: soulteeUid } },
         {
           $project: {
             status: 1,
-            effectiveFee: {
-              $ifNull: ["$sessionFee", defaultSessionFee],
+            sessionType: 1,
+            scheduledAt: 1,
+            effectiveFee: { $ifNull: ["$sessionFee", defaultFee] },
+            soulteeEarnings: {
+              $ifNull: [
+                "$soulteeEarnings",
+                { $multiply: [{ $ifNull: ["$sessionFee", defaultFee] }, { $subtract: [1, { $divide: [PLATFORM_COMMISSION_RATE, 100] }] }] },
+              ],
             },
           },
         },
         {
           $group: {
             _id: null,
-            completedSessions: {
-              $sum: {
-                $cond: [{ $eq: ["$status", "completed"] }, 1, 0],
-              },
-            },
-            earningsReceived: {
-              $sum: {
-                $cond: [{ $eq: ["$status", "completed"] }, "$effectiveFee", 0],
-              },
-            },
-            earningsToBeReceived: {
-              $sum: {
-                $cond: [
-                  { $in: ["$status", ["upcoming", "ongoing"]] },
-                  "$effectiveFee",
-                  0,
-                ],
-              },
-            },
+            completedSessions:   { $sum: { $cond: [{ $eq: ["$status", "completed"] }, 1, 0] } },
+            chatSessions:        { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $eq: ["$sessionType","chat"] }] }, 1, 0] } },
+            voiceSessions:       { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $eq: ["$sessionType","voice"] }] }, 1, 0] } },
+            videoSessions:       { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $eq: ["$sessionType","video"] }] }, 1, 0] } },
+            earningsReceived:    { $sum: { $cond: [{ $eq: ["$status", "completed"] }, "$soulteeEarnings", 0] } },
+            earningsToBeReceived:{ $sum: { $cond: [{ $in: ["$status", ["upcoming","ongoing"]] }, "$soulteeEarnings", 0] } },
+            thisMonthEarnings:   { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $gte: ["$scheduledAt", monthStart] }] }, "$soulteeEarnings", 0] } },
+            todayEarnings:       { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $gte: ["$scheduledAt", todayStart] }, { $lte: ["$scheduledAt", todayEnd] }] }, "$soulteeEarnings", 0] } },
+            chatEarnings:        { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $eq: ["$sessionType","chat"] }] }, "$soulteeEarnings", 0] } },
+            voiceEarnings:       { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $eq: ["$sessionType","voice"] }] }, "$soulteeEarnings", 0] } },
+            videoEarnings:       { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $eq: ["$sessionType","video"] }] }, "$soulteeEarnings", 0] } },
+            totalClientsServed:  { $addToSet: { $cond: [{ $eq: ["$status","completed"] }, "$studentFirebaseUid", null] } },
+            totalDurationMins:   { $sum: { $cond: [{ $eq: ["$status","completed"] }, { $ifNull: ["$durationMinutes", 0] }, 0] } },
           },
         },
       ]);
 
-      const { totalUnreadMessages } = await getUnreadMessageSummary({
-        userId: soulteeUid,
-        userRole: "soultee",
-      });
+      // ── Unique clients / repeat ───────────────────────────────────────────
+      const clientSet    = (agg?.totalClientsServed ?? []).filter(Boolean);
+      const uniqueClients = clientSet.length;
+      const completedCount = agg?.completedSessions ?? 0;
+      const repeatClients = Math.max(0, completedCount - uniqueClients);
+      const avgSessionMins = completedCount > 0 ? Math.round((agg?.totalDurationMins ?? 0) / completedCount) : 0;
 
-      const completedSessions = earningsSummary?.completedSessions ?? 0;
-      const earningsReceived = earningsSummary?.earningsReceived ?? 0;
-      const earningsToBeReceived = earningsSummary?.earningsToBeReceived ?? 0;
+      // ── Wallet ────────────────────────────────────────────────────────────
+      const earnedSoFar     = agg?.earningsReceived ?? 0;
+      const totalWithdrawn  = wallet?.totalWithdrawn ?? 0;
+      const pendingWd       = wallet?.pendingWithdrawals ?? 0;
+      const availableBalance = Math.max(0, earnedSoFar - totalWithdrawn - pendingWd);
+
+      const { totalUnreadMessages } = await getUnreadMessageSummary({ userId: soulteeUid, userRole: "soultee" });
 
       res.json({
-        completedSessions,
+        completedSessions:    completedCount,
+        chatSessions:         agg?.chatSessions  ?? 0,
+        voiceSessions:        agg?.voiceSessions ?? 0,
+        videoSessions:        agg?.videoSessions ?? 0,
         activeStudents,
         pendingRequests,
         todaySessions,
         upcomingSessions,
-        walletBalance: earningsReceived,
-        earningsReceived,
-        earningsToBeReceived,
-        unreadMessages: totalUnreadMessages,
-        rating: soultee?.rating ?? 0,
-        totalFeedbacks: soultee?.totalFeedbacks ?? 0,
+
+        // Earnings
+        earningsReceived:     earnedSoFar,
+        earningsToBeReceived: agg?.earningsToBeReceived ?? 0,
+        thisMonthEarnings:    agg?.thisMonthEarnings ?? 0,
+        todayEarnings:        agg?.todayEarnings ?? 0,
+        chatEarnings:         agg?.chatEarnings  ?? 0,
+        voiceEarnings:        agg?.voiceEarnings ?? 0,
+        videoEarnings:        agg?.videoEarnings ?? 0,
+
+        // Wallet
+        walletBalance:        availableBalance,
+        availableBalance,
+        withdrawableBalance:  availableBalance,
+        pendingWithdrawals:   pendingWd,
+
+        // Performance
+        totalClientsServed:   uniqueClients,
+        repeatClients,
+        avgSessionMinutes:    avgSessionMins,
+
+        unreadMessages:         totalUnreadMessages,
+        rating:                 soultee?.rating ?? 0,
+        totalFeedbacks:         soultee?.totalFeedbacks ?? 0,
         notificationBadgeCount: pendingRequests + totalUnreadMessages,
       });
     } catch (err) {
@@ -1130,6 +1159,205 @@ export default function createSoulteeDashboardRoutes(io) {
         feePerSession: soultee.feePerSession ?? 0,
         currency: soultee.currency ?? "NPR",
       });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  //  ACTIVE SESSION
+  //  GET /api/soultee-dashboard/:soulteeUid/active-session
+  //  Returns the current ongoing session (or null).
+  // ───────────────────────────────────────────────────────────────────────────
+  router.get("/:soulteeUid/active-session", async (req, res) => {
+    try {
+      const session = await Session.findOne({
+        soulteeFirebaseUid: req.params.soulteeUid,
+        status: "ongoing",
+      }).lean();
+
+      if (!session) return res.json({ session: null });
+
+      const startedAt      = session.startedAt || session.scheduledAt;
+      const durationMs     = (session.durationMinutes || 10) * 60 * 1000;
+      const elapsed        = Date.now() - new Date(startedAt).getTime();
+      const remainingMs    = Math.max(0, durationMs - elapsed);
+      const remainingSecs  = Math.floor(remainingMs / 1000);
+
+      const fee = session.sessionFee || 0;
+      const soulteeEarnings = session.soulteeEarnings ??
+        fee * (1 - PLATFORM_COMMISSION_RATE / 100);
+
+      res.json({
+        session: {
+          ...session,
+          remainingSeconds: remainingSecs,
+          soulteeEarnings,
+        },
+      });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  //  START SESSION TIMER
+  //  PATCH /api/soultee-dashboard/:soulteeUid/sessions/:sessionId/start
+  //  Transitions session to "ongoing" and records startedAt.
+  // ───────────────────────────────────────────────────────────────────────────
+  router.patch("/:soulteeUid/sessions/:sessionId/start", async (req, res) => {
+    try {
+      const session = await Session.findOneAndUpdate(
+        { _id: req.params.sessionId, soulteeFirebaseUid: req.params.soulteeUid, status: "upcoming" },
+        { $set: { status: "ongoing", startedAt: new Date() } },
+        { new: true }
+      );
+      if (!session) return res.status(404).json({ message: "Session not found or already started" });
+
+      io.to(`session:${req.params.sessionId}`).emit("session:started", {
+        sessionId: req.params.sessionId,
+        startedAt: session.startedAt,
+        durationMinutes: session.durationMinutes,
+      });
+
+      res.json({ session });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  //  COMPLETE SESSION & UPDATE WALLET
+  //  PATCH /api/soultee-dashboard/:soulteeUid/sessions/:sessionId/complete
+  // ───────────────────────────────────────────────────────────────────────────
+  router.patch("/:soulteeUid/sessions/:sessionId/complete", async (req, res) => {
+    try {
+      const session = await Session.findOne({
+        _id: req.params.sessionId,
+        soulteeFirebaseUid: req.params.soulteeUid,
+      });
+      if (!session) return res.status(404).json({ message: "Session not found" });
+      if (session.status === "completed") return res.json({ session });
+
+      const fee      = session.sessionFee || 0;
+      const rate     = session.commissionRate ?? PLATFORM_COMMISSION_RATE;
+      const soulteeEarnings  = +(fee * (1 - rate / 100)).toFixed(2);
+      const platformEarnings = +(fee * rate / 100).toFixed(2);
+
+      session.status          = "completed";
+      session.soulteeEarnings = soulteeEarnings;
+      session.platformEarnings= platformEarnings;
+      await session.save();
+
+      // Upsert wallet
+      await SessionWallet.findOneAndUpdate(
+        { soulteeFirebaseUid: req.params.soulteeUid },
+        { $inc: { totalEarned: soulteeEarnings } },
+        { upsert: true }
+      );
+
+      io.to(`session:${req.params.sessionId}`).emit("session:completed", {
+        sessionId: req.params.sessionId,
+      });
+
+      res.json({ session, soulteeEarnings, platformEarnings });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  //  WALLET INFO
+  //  GET /api/soultee-dashboard/:soulteeUid/wallet
+  // ───────────────────────────────────────────────────────────────────────────
+  router.get("/:soulteeUid/wallet", async (req, res) => {
+    try {
+      const wallet = await SessionWallet.findOne({ soulteeFirebaseUid: req.params.soulteeUid }).lean();
+      const earned     = wallet?.totalEarned    ?? 0;
+      const withdrawn  = wallet?.totalWithdrawn ?? 0;
+      const pending    = wallet?.pendingWithdrawals ?? 0;
+      const available  = Math.max(0, earned - withdrawn - pending);
+
+      res.json({
+        totalEarned: earned,
+        totalWithdrawn: withdrawn,
+        pendingWithdrawals: pending,
+        availableBalance: available,
+        withdrawableBalance: available,
+      });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  //  REQUEST WITHDRAWAL
+  //  POST /api/soultee-dashboard/:soulteeUid/withdrawals
+  //  Body: { amount, method, accountDetails }
+  // ───────────────────────────────────────────────────────────────────────────
+  router.post("/:soulteeUid/withdrawals", async (req, res) => {
+    try {
+      const { soulteeUid } = req.params;
+      const { amount, method, accountDetails } = req.body;
+
+      if (!amount || amount < 100) {
+        return res.status(400).json({ message: "Minimum withdrawal amount is NPR 100." });
+      }
+      if (!["esewa", "khalti", "bank"].includes(method)) {
+        return res.status(400).json({ message: "Invalid method. Use esewa, khalti, or bank." });
+      }
+
+      // Check available balance
+      const wallet = await SessionWallet.findOne({ soulteeFirebaseUid: soulteeUid }).lean();
+      const earned    = wallet?.totalEarned ?? 0;
+      const withdrawn = wallet?.totalWithdrawn ?? 0;
+      const pending   = wallet?.pendingWithdrawals ?? 0;
+      const available = Math.max(0, earned - withdrawn - pending);
+
+      if (amount > available) {
+        return res.status(400).json({ message: `Insufficient balance. Available: NPR ${available}.` });
+      }
+
+      const wd = await SessionWithdrawal.create({
+        soulteeFirebaseUid: soulteeUid,
+        amount,
+        method,
+        accountDetails: accountDetails || {},
+      });
+
+      // Reserve the amount
+      await SessionWallet.findOneAndUpdate(
+        { soulteeFirebaseUid: soulteeUid },
+        { $inc: { pendingWithdrawals: amount } },
+        { upsert: true }
+      );
+
+      res.json({ withdrawal: wd, message: "Withdrawal request submitted." });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  //  WITHDRAWAL HISTORY
+  //  GET /api/soultee-dashboard/:soulteeUid/withdrawals?status=&page=
+  // ───────────────────────────────────────────────────────────────────────────
+  router.get("/:soulteeUid/withdrawals", async (req, res) => {
+    try {
+      const { status, page = "1", limit = "20" } = req.query;
+      const filter = { soulteeFirebaseUid: req.params.soulteeUid };
+      if (status) filter.status = status;
+
+      const [withdrawals, total] = await Promise.all([
+        SessionWithdrawal.find(filter)
+          .sort({ createdAt: -1 })
+          .skip((parseInt(page) - 1) * parseInt(limit))
+          .limit(parseInt(limit))
+          .lean(),
+        SessionWithdrawal.countDocuments(filter),
+      ]);
+
+      res.json({ withdrawals, total });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }

@@ -17,11 +17,22 @@ const sessionSchema = new mongoose.Schema(
       default: "upcoming",
     },
 
-    notes: { type: String, default: "" },       // soultee's private session notes
-    sessionType: { type: String, default: "chat" }, // chat | video | voice
+    notes:        { type: String, default: "" },
+    sessionType:  { type: String, default: "chat" }, // chat | video | voice
     cancelReason: { type: String, default: "" },
+
+    // Timer tracking — set when status transitions to "ongoing"
+    startedAt: { type: Date, default: null },
+
+    // Earnings split — set when session completes
+    commissionRate:  { type: Number, default: 20 },   // platform % (e.g. 20)
+    soulteeEarnings: { type: Number, default: null },  // sessionFee * (1 - rate/100)
+    platformEarnings:{ type: Number, default: null },
   },
   { timestamps: true }
 );
+
+sessionSchema.index({ soulteeFirebaseUid: 1, status: 1, scheduledAt: -1 });
+sessionSchema.index({ studentFirebaseUid: 1, status: 1, scheduledAt: -1 });
 
 export default mongoose.model("Session", sessionSchema);
