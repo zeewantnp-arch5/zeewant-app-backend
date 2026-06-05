@@ -46,7 +46,7 @@ async function activateSubscription(payment, io = null) {
 
   // Create an upcoming session so "Earnings To Be Received" shows immediately
   try {
-    await Session.create({
+    const sess = await Session.create({
       soulteeFirebaseUid: payment.soulteeId,
       studentFirebaseUid: payment.userId,
       scheduledAt:    new Date(),
@@ -55,6 +55,7 @@ async function activateSubscription(payment, io = null) {
       sessionType:    "chat",
       status:         "upcoming",
     });
+    console.log(`[Payment] Session created: ${sess._id} fee=${sess.sessionFee} soultee=${payment.soulteeId}`);
   } catch (err) {
     console.error("[activateSubscription] Session create error:", err.message);
   }
@@ -62,6 +63,9 @@ async function activateSubscription(payment, io = null) {
   // Notify soultee dashboard to refresh stats in real-time
   if (io) {
     io.to(`soultee:${payment.soulteeId}`).emit("stats:updated");
+    console.log(`[Payment] stats:updated emitted to soultee:${payment.soulteeId}`);
+  } else {
+    console.warn("[Payment] io not available — stats:updated not emitted");
   }
 
   const expiryStr = expiryDate.toLocaleString("en-US", {
@@ -625,6 +629,48 @@ router.post("/esewa/recover", async (req, res) => {
 
     await activateSubscription(updated, req.app.get("io"));
     res.json({ success: true, message: "Subscription activated via recovery" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  DEBUG — create session for already-completed payments that missed it
+//  POST /api/payments/fix-sessions
+//  Body: { soulteeId }   — creates upcoming sessions for all completed payments missing a session
+// ─────────────────────────────────────────────────────────────────────────────
+router.post("/fix-sessions", async (req, res) => {
+  try {
+    const { soulteeId } = req.body;
+    if (!soulteeId) return res.status(400).json({ message: "soulteeId required" });
+
+    const payments = await Payment.find({ soulteeId, status: "completed" }).lean();
+    let created = 0;
+
+    for (const payment of payments) {
+      const existing = await Session.findOne({
+        soulteeFirebaseUid: payment.soulteeId,
+        studentFirebaseUid: payment.userId,
+        sessionFee: payment.amount,
+      });
+      if (!existing) {
+        await Session.create({
+          soulteeFirebaseUid: payment.soulteeId,
+          studentFirebaseUid: payment.userId,
+          scheduledAt: payment.createdAt || new Date(),
+          durationMinutes: 30,
+          sessionFee: payment.amount,
+          sessionType: "chat",
+          status: "upcoming",
+        });
+        created++;
+      }
+    }
+
+    const io = req.app.get("io");
+    if (io) io.to(`soultee:${soulteeId}`).emit("stats:updated");
+
+    res.json({ message: `Fixed: ${created} sessions created out of ${payments.length} payments`, created });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
