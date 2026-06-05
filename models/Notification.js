@@ -29,6 +29,8 @@ const notificationSchema = new mongoose.Schema(
         // Emotional Prescription
         "prescription_request",          // soultee receives: student has submitted a prescription request
         "prescription_ready",            // student receives: soultee has filled their prescription
+        // Soultee availability broadcast
+        "soultee_available",             // student receives: soultee is online and available now
       ],
       required: true,
     },
