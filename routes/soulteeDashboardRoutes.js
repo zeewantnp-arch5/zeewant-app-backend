@@ -312,7 +312,7 @@ export default function createSoulteeDashboardRoutes(io) {
             voiceSessions:       { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $eq: ["$sessionType","voice"] }] }, 1, 0] } },
             videoSessions:       { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $eq: ["$sessionType","video"] }] }, 1, 0] } },
             earningsReceived:    { $sum: { $cond: [{ $eq: ["$status", "completed"] }, "$soulteeEarnings", 0] } },
-            earningsToBeReceived:{ $sum: { $cond: [{ $in: ["$status", ["upcoming","ongoing"]] }, "$soulteeEarnings", 0] } },
+            earningsToBeReceived:{ $sum: { $cond: [{ $in: ["$status", ["upcoming","ongoing"]] }, "$effectiveFee", 0] } },
             thisMonthEarnings:   { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $gte: ["$scheduledAt", monthStart] }] }, "$soulteeEarnings", 0] } },
             todayEarnings:       { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $gte: ["$scheduledAt", todayStart] }, { $lte: ["$scheduledAt", todayEnd] }] }, "$soulteeEarnings", 0] } },
             chatEarnings:        { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $eq: ["$sessionType","chat"] }] }, "$soulteeEarnings", 0] } },
