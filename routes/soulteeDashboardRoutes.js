@@ -1212,7 +1212,12 @@ export default function createSoulteeDashboardRoutes(io) {
       await Promise.all(
         links.map(async (link) => {
           try {
-            const result = await sendPushNotification(link.studentFirebaseUid, {
+            // createNotification: saves to MongoDB + syncs RTDB + sends FCM push
+            // → notification appears in student's bell AND as phone push
+            await createNotification(io, {
+              recipientUid:  link.studentFirebaseUid,
+              recipientRole: "student",
+              type:          "soultee_available",
               title,
               body,
               data: {
@@ -1223,7 +1228,7 @@ export default function createSoulteeDashboardRoutes(io) {
                 screen:      "soultee_search",
               },
             });
-            if (result?.messagesSent > 0 || result?.success) notified++;
+            notified++;
           } catch (_) {}
         })
       );
