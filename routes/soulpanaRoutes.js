@@ -83,11 +83,6 @@ export default function createSoulpanaRoutes(io) {
         });
       }
 
-      const existing = await Soulpana.findOne({ userId, status: "pending" });
-      if (existing) {
-        return res.status(409).json({ message: "You already have one active question pending" });
-      }
-
       const attachments = (req.files || []).map((f) => ({
         originalName: f.originalname,
         fileName: f.filename,
