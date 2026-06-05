@@ -851,16 +851,32 @@ export default function createSoulteeDashboardRoutes(io) {
   // GET /api/soultee-dashboard/:soulteeUid/sessions
   router.get("/:soulteeUid/sessions", async (req, res) => {
     try {
-      const filter = { soulteeFirebaseUid: req.params.soulteeUid };
+      const { soulteeUid } = req.params;
+      const filter = { soulteeFirebaseUid: soulteeUid };
       if (req.query.status)     filter.status             = req.query.status;
       if (req.query.studentUid) filter.studentFirebaseUid = req.query.studentUid;
 
       const sessions = await Session.find(filter)
         .sort({ scheduledAt: -1 })
-        .limit(50)
+        .limit(200)
         .lean();
 
-      res.json({ sessions, total: sessions.length });
+      // Attach linkId (StudentSoulteeLink._id) so Flutter can open the chat room.
+      const studentUids = [...new Set(sessions.map((s) => s.studentFirebaseUid))];
+      const links = await StudentSoulteeLink.find({
+        soulteeFirebaseUid: soulteeUid,
+        studentFirebaseUid: { $in: studentUids },
+      }).select("studentFirebaseUid _id").lean();
+
+      const linkMap = {};
+      for (const l of links) linkMap[l.studentFirebaseUid] = l._id.toString();
+
+      const enriched = sessions.map((s) => ({
+        ...s,
+        linkId: linkMap[s.studentFirebaseUid] ?? null,
+      }));
+
+      res.json({ sessions: enriched, total: enriched.length });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
