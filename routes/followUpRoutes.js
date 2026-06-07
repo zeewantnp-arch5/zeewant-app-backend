@@ -4,7 +4,6 @@ import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import Session from "../models/Session.js";
 
 function generateOtp() {
-  // 6-digit OTP — never starts with 0 (100000–999999)
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
@@ -22,29 +21,20 @@ export default function createFollowUpRoutes(io) {
         FollowUpOtp.findOne({ roomId, status: "USED"    }).lean(),
         FollowUpOtp.findOne({ roomId, status: "EXPIRED" }).lean(),
         FollowUpOtp.findOne({ roomId, status: "ACTIVE"  }).lean(),
-        // Check if any paid session for this pair is completed (handles old sessions
-        // where chatLocked was not set because our code wasn't deployed yet)
         Session.findOne({
           soulteeFirebaseUid: link.soulteeFirebaseUid,
           studentFirebaseUid: link.studentFirebaseUid,
           status: "completed",
-        }).lean(),
+        }).sort({ createdAt: -1 }).lean(),
       ]);
 
-      // Chat is locked when ANY of these are true (and no active follow-up):
-      // 1. chatLocked flag explicitly set (timer-expired sessions via new code)
-      // 2. link.status === "ended" (soultee used end-session button)
-      // 3. A paid session is completed but chatLocked was never set (old sessions)
       const sessionCompleted = !!completedSession;
       const isRawLocked = link.chatLocked === true
         || link.status === "ended"
         || sessionCompleted;
-
-      // Follow-up OTP being USED overrides the lock
       const effectiveLocked = isRawLocked && !usedOtp;
 
-      // Auto-repair: stamp chatLocked=true for old sessions so future DB checks
-      // don't need the extra Session query
+      // Auto-repair chatLocked for old sessions
       if (sessionCompleted && !link.chatLocked && link.status !== "ended" && !usedOtp) {
         StudentSoulteeLink.updateOne({ _id: roomId }, { chatLocked: true }).catch(() => {});
       }
@@ -54,7 +44,9 @@ export default function createFollowUpRoutes(io) {
         followUpActive:  !!usedOtp,
         followUpExpired: !usedOtp && !!expiredOtp,
         otpPending:      activeOtp?.otp ?? null,
+        durationMinutes: usedOtp?.durationMinutes ?? completedSession?.durationMinutes ?? null,
         expiresAt:       usedOtp?.expiresAt ?? null,
+        activatedAt:     usedOtp?.activatedAt ?? null,
       });
     } catch (err) {
       res.status(500).json({ message: err.message });
@@ -62,7 +54,6 @@ export default function createFollowUpRoutes(io) {
   });
 
   // ─── POST /api/follow-up/:roomId/generate ──────────────────────────────────
-  // Soultee generates a 6-digit OTP after session ends
   router.post("/:roomId/generate", async (req, res) => {
     try {
       const { soulteeUid } = req.body;
@@ -73,14 +64,31 @@ export default function createFollowUpRoutes(io) {
       const link = await StudentSoulteeLink.findOne({ _id: roomId }).lean();
       if (!link) return res.status(404).json({ message: "Room not found" });
       if (link.soulteeFirebaseUid !== soulteeUid) return res.status(403).json({ message: "Not authorized" });
+
       const isLocked = link.chatLocked === true || link.status === "ended";
-      if (!isLocked) return res.status(400).json({ message: "Session is still active" });
+      if (!isLocked) {
+        // Also check if session is completed (old sessions)
+        const sess = await Session.findOne({
+          soulteeFirebaseUid: link.soulteeFirebaseUid,
+          studentFirebaseUid: link.studentFirebaseUid,
+          status: "completed",
+        }).lean();
+        if (!sess) return res.status(400).json({ message: "Session is still active" });
+      }
 
       // Return existing ACTIVE OTP if already generated
       const existing = await FollowUpOtp.findOne({ roomId, status: "ACTIVE" }).lean();
-      if (existing) return res.json({ otp: existing.otp });
+      if (existing) return res.json({ otp: existing.otp, durationMinutes: existing.durationMinutes });
 
-      // Generate unique 6-digit OTP with collision retry
+      // Get duration from the most recent completed session
+      const session = await Session.findOne({
+        soulteeFirebaseUid: link.soulteeFirebaseUid,
+        studentFirebaseUid: link.studentFirebaseUid,
+        status: "completed",
+      }).sort({ createdAt: -1 }).lean();
+      const durationMinutes = session?.durationMinutes ?? 60;
+
+      // Generate unique OTP
       let otp;
       for (let i = 0; i < 10; i++) {
         const candidate = generateOtp();
@@ -92,21 +100,25 @@ export default function createFollowUpRoutes(io) {
       const record = await FollowUpOtp.create({
         otp,
         roomId,
+        sessionId: session?._id ?? null,
+        durationMinutes,
         studentFirebaseUid: link.studentFirebaseUid,
         soulteeFirebaseUid: link.soulteeFirebaseUid,
       });
 
-      // Emit only to soultee's personal room — student does not get the OTP automatically
-      io.to(`soultee:${soulteeUid}`).emit("followup_code_generated", { roomId, otp: record.otp });
+      io.to(`soultee:${soulteeUid}`).emit("followup_code_generated", {
+        roomId,
+        otp: record.otp,
+        durationMinutes,
+      });
 
-      res.json({ otp: record.otp });
+      res.json({ otp: record.otp, durationMinutes });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
   });
 
   // ─── POST /api/follow-up/:roomId/activate ──────────────────────────────────
-  // Student enters OTP to unlock chat for 7 days
   router.post("/:roomId/activate", async (req, res) => {
     try {
       const { studentUid, otp } = req.body;
@@ -122,29 +134,51 @@ export default function createFollowUpRoutes(io) {
       if (!record) return res.status(404).json({ message: "Invalid or already used OTP" });
       if (record.studentFirebaseUid !== studentUid) return res.status(403).json({ message: "OTP is not valid for this student" });
 
-      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      const durationMs = record.durationMinutes * 60 * 1000;
+      const activatedAt = new Date();
+      const expiresAt   = new Date(activatedAt.getTime() + durationMs);
+
       record.status      = "USED";
-      record.activatedAt = new Date();
+      record.activatedAt = activatedAt;
       record.expiresAt   = expiresAt;
       await record.save();
 
-      // Unlock chat — if link was "ended" (via end-session route) reactivate it so
-      // messageService.getRoomLinkForParticipant() can find it and deliver messages
+      // Unlock chat — reactivate "ended" link so messageService can find it
       const linkDoc = await StudentSoulteeLink.findOne({ _id: roomId }).lean();
       const updateFields = { chatLocked: false };
       if (linkDoc?.status === "ended") updateFields.status = "active";
       await StudentSoulteeLink.updateOne({ _id: roomId }, updateFields);
 
-      io.to(roomId).emit("followup_activated", { roomId, expiresAt: expiresAt.toISOString() });
+      io.to(roomId).emit("followup_activated", {
+        roomId,
+        durationMinutes: record.durationMinutes,
+        expiresAt: expiresAt.toISOString(),
+        activatedAt: activatedAt.toISOString(),
+      });
 
-      res.json({ success: true, expiresAt });
+      // Server-side auto-expire when follow-up duration ends
+      setTimeout(async () => {
+        try {
+          const r = await FollowUpOtp.findById(record._id);
+          if (!r || r.status !== "USED") return;
+          r.status = "EXPIRED";
+          await r.save();
+          await StudentSoulteeLink.updateOne({ _id: roomId }, { chatLocked: true });
+          io.to(roomId).emit("followup_expired",  { roomId });
+          io.to(roomId).emit("chat_relocked",      { roomId });
+          console.log(`[followUp] Auto-expired OTP ${record.otp} after ${record.durationMinutes} min — room ${roomId} relocked`);
+        } catch (autoErr) {
+          console.error("[followUp] Auto-expire error:", autoErr.message);
+        }
+      }, durationMs);
+
+      res.json({ success: true, durationMinutes: record.durationMinutes, expiresAt, activatedAt });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
   });
 
   // ─── POST /api/follow-up/:roomId/request-resend ────────────────────────────
-  // Student requests soultee to resend/share the OTP again
   router.post("/:roomId/request-resend", async (req, res) => {
     try {
       const { studentUid } = req.body;
@@ -156,10 +190,8 @@ export default function createFollowUpRoutes(io) {
       if (!link) return res.status(404).json({ message: "Room not found" });
       if (link.studentFirebaseUid !== studentUid) return res.status(403).json({ message: "Not authorized" });
 
-      // Get the existing ACTIVE OTP (if soultee already generated one)
       const existing = await FollowUpOtp.findOne({ roomId, status: "ACTIVE" }).lean();
 
-      // Notify soultee — include otp so they can see it again on their screen
       io.to(`soultee:${link.soulteeFirebaseUid}`).emit("followup_resend_requested", {
         roomId,
         otp: existing?.otp ?? null,

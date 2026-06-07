@@ -143,9 +143,11 @@ async function startServer() {
   runFeatureExpiryJob();
   setInterval(runFeatureExpiryJob, 12 * 60 * 60 * 1000);
 
-  // Follow-up code expiry: immediately, then every hour
+  // Follow-up OTP expiry: immediately on startup (catches missed expirations after
+  // a server restart — the per-activation setTimeout is lost on restart)
+  // then every 5 minutes
   runFollowUpExpiryJob(io);
-  setInterval(() => runFollowUpExpiryJob(io), 60 * 60 * 1000);
+  setInterval(() => runFollowUpExpiryJob(io), 5 * 60 * 1000);
 
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`🚀 Server running on port ${PORT}`);

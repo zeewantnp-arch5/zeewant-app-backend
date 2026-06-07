@@ -13,8 +13,11 @@ const followUpOtpSchema = new mongoose.Schema(
     // EXPIRED = 7-day window has passed, chat relocked
     status: { type: String, enum: ["ACTIVE", "USED", "EXPIRED"], default: "ACTIVE" },
 
+    // Duration mirrors the original paid session (e.g. 10, 20, 30, 60 minutes)
+    durationMinutes: { type: Number, default: 60 },
+
     activatedAt: { type: Date, default: null },
-    expiresAt:   { type: Date, default: null },
+    expiresAt:   { type: Date, default: null }, // activatedAt + durationMinutes
   },
   { timestamps: true }
 );
