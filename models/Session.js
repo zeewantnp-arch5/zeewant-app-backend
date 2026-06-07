@@ -28,6 +28,10 @@ const sessionSchema = new mongoose.Schema(
     commissionRate:  { type: Number, default: 20 },   // platform % (e.g. 20)
     soulteeEarnings: { type: Number, default: null },  // sessionFee * (1 - rate/100)
     platformEarnings:{ type: Number, default: null },
+
+    // Admin payment — true only after admin explicitly pays the soultee their share
+    adminPaid:   { type: Boolean, default: false },
+    adminPaidAt: { type: Date,    default: null  },
   },
   { timestamps: true }
 );

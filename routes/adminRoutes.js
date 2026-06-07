@@ -6,6 +6,7 @@ import Souljar from "../models/souljar.js";
 import Soultee from "../models/Soultee.js";
 import Soulpana from "../models/Soulpana.js";
 import Session from "../models/Session.js";
+import SessionWallet from "../models/SessionWallet.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import AdminUser, { ADMIN_ROLES } from "../models/AdminUser.js";
 import SoulteeApplication, { computeCompletenessScore, computeRiskFlags } from "../models/SoulteeApplication.js";
@@ -2198,17 +2199,49 @@ router.patch(
         .lean();
       if (!soultee) return res.status(404).json({ message: "Soultee not found" });
 
+      // Find all completed sessions that admin hasn't paid yet
+      const unpaidSessions = await Session.find({
+        soulteeFirebaseUid: soulteeUid,
+        status: "completed",
+        adminPaid: { $ne: true },
+      }).lean();
+
+      const totalToCredit = unpaidSessions.reduce(
+        (sum, s) => sum + (s.soulteeEarnings || 0),
+        0
+      );
+
+      if (unpaidSessions.length > 0) {
+        // Mark all as admin-paid
+        await Session.updateMany(
+          { _id: { $in: unpaidSessions.map((s) => s._id) } },
+          { adminPaid: true, adminPaidAt: new Date() }
+        );
+        // Credit the soultee's wallet
+        await SessionWallet.findOneAndUpdate(
+          { soulteeFirebaseUid: soulteeUid },
+          { $inc: { totalEarned: totalToCredit } },
+          { upsert: true }
+        );
+      }
+
       const io = req.app.get("io");
       if (io) {
+        // Real-time dashboard refresh for the soultee
+        io.to(`soultee:${soulteeUid}`).emit("stats:updated");
+
         await notifyApplicant(io, {
           recipientUid: soulteeUid,
           recipientRole: "soultee",
           type: "billing_payment_success",
-          title: "Payment Successful",
-          body: "Your payment has been processed successfully by admin.",
+          title: "Payment Received",
+          body: totalToCredit > 0
+            ? `Admin has credited NPR ${totalToCredit.toFixed(0)} to your wallet.`
+            : "Your payment has been processed successfully by admin.",
           data: {
             type: "billing_payment_success",
             soulteeUid,
+            amount: totalToCredit,
             screen: "notifications",
           },
         });
@@ -2219,11 +2252,16 @@ router.patch(
         resourceType: "soultee",
         resourceId: soulteeUid,
         resourceName: soultee.name || soulteeUid,
-        description: `Admin marked payment successful for soultee ${soultee.name || soulteeUid}`,
+        description: `Admin credited NPR ${totalToCredit.toFixed(0)} to soultee ${soultee.name || soulteeUid} (${unpaidSessions.length} session(s))`,
         severity: "info",
       });
 
-      res.json({ success: true, message: "Payment marked successful and notification sent." });
+      res.json({
+        success: true,
+        message: "Payment marked successful and wallet credited.",
+        sessionsCredited: unpaidSessions.length,
+        amountCredited: totalToCredit,
+      });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
