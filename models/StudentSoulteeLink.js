@@ -22,6 +22,9 @@ const studentSoulteeLinkSchema = new mongoose.Schema(
     requestedAt: { type: Date, default: Date.now },
     acceptedAt: Date,
     endedAt: Date,
+
+    // true after session timer expires; false while follow-up code is active
+    chatLocked: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

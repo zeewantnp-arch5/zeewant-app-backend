@@ -1357,6 +1357,15 @@ export default function createSoulteeDashboardRoutes(io) {
           await s.save();
           io.to(`session:${req.params.sessionId}`).emit("session:completed", { sessionId: req.params.sessionId });
           io.to(`soultee:${req.params.soulteeUid}`).emit("stats:updated");
+          // Lock chat when timer expires
+          const chatLink = await StudentSoulteeLink.findOneAndUpdate(
+            { soulteeFirebaseUid: s.soulteeFirebaseUid, studentFirebaseUid: s.studentFirebaseUid, status: "active" },
+            { chatLocked: true },
+            { new: true }
+          );
+          if (chatLink) {
+            io.to(chatLink._id.toString()).emit("chat_locked", { roomId: chatLink._id.toString() });
+          }
         } catch (autoErr) {
           console.error("Auto-complete session error:", autoErr.message);
         }
@@ -1398,6 +1407,16 @@ export default function createSoulteeDashboardRoutes(io) {
 
       // Push real-time dashboard refresh to the soultee
       io.to(`soultee:${req.params.soulteeUid}`).emit("stats:updated");
+
+      // Lock chat for this student-soultee pair
+      const chatLink = await StudentSoulteeLink.findOneAndUpdate(
+        { soulteeFirebaseUid: req.params.soulteeUid, studentFirebaseUid: session.studentFirebaseUid, status: "active" },
+        { chatLocked: true },
+        { new: true }
+      );
+      if (chatLink) {
+        io.to(chatLink._id.toString()).emit("chat_locked", { roomId: chatLink._id.toString() });
+      }
 
       res.json({ session, soulteeEarnings, platformEarnings });
     } catch (err) {
