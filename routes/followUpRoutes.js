@@ -9,7 +9,7 @@ function generateCode() {
     { length: 5 },
     () => CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)]
   ).join("");
-  return `ZW-7D-${suffix}`;
+  return `ZW-FUP-${suffix}`;
 }
 
 export default function createFollowUpRoutes(io) {
