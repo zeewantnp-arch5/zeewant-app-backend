@@ -17,7 +17,7 @@ import {
 import { createNotification, emitToUser } from "../services/notificationService.js";
 import { syncProfileToRTDB } from "../config/firebase.js";
 
-const PLATFORM_COMMISSION_RATE = 20; // 20% platform fee
+const PLATFORM_COMMISSION_RATE = 10; // 10% platform fee
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Factory — receives io so every route handler can emit socket events
@@ -1311,6 +1311,33 @@ export default function createSoulteeDashboardRoutes(io) {
         startedAt: session.startedAt,
         durationMinutes: session.durationMinutes,
       });
+      io.to(`soultee:${req.params.soulteeUid}`).emit("stats:updated");
+
+      // Auto-complete after session duration expires
+      const durationMs = (session.durationMinutes || 10) * 60 * 1000;
+      setTimeout(async () => {
+        try {
+          const s = await Session.findOne({ _id: req.params.sessionId });
+          if (!s || s.status !== "ongoing") return;
+          const fee = s.sessionFee || 0;
+          const rate = s.commissionRate ?? PLATFORM_COMMISSION_RATE;
+          const soulteeEarnings = +(fee * (1 - rate / 100)).toFixed(2);
+          const platformEarnings = +(fee * rate / 100).toFixed(2);
+          s.status = "completed";
+          s.soulteeEarnings = soulteeEarnings;
+          s.platformEarnings = platformEarnings;
+          await s.save();
+          await SessionWallet.findOneAndUpdate(
+            { soulteeFirebaseUid: req.params.soulteeUid },
+            { $inc: { totalEarned: soulteeEarnings } },
+            { upsert: true }
+          );
+          io.to(`session:${req.params.sessionId}`).emit("session:completed", { sessionId: req.params.sessionId });
+          io.to(`soultee:${req.params.soulteeUid}`).emit("stats:updated");
+        } catch (autoErr) {
+          console.error("Auto-complete session error:", autoErr.message);
+        }
+      }, durationMs);
 
       res.json({ session });
     } catch (err) {
