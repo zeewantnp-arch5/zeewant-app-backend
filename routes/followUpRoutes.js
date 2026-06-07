@@ -143,5 +143,33 @@ export default function createFollowUpRoutes(io) {
     }
   });
 
+  // ─── POST /api/follow-up/:roomId/request-resend ────────────────────────────
+  // Student requests soultee to resend/share the OTP again
+  router.post("/:roomId/request-resend", async (req, res) => {
+    try {
+      const { studentUid } = req.body;
+      const { roomId } = req.params;
+
+      if (!studentUid) return res.status(400).json({ message: "studentUid is required" });
+
+      const link = await StudentSoulteeLink.findOne({ _id: roomId }).lean();
+      if (!link) return res.status(404).json({ message: "Room not found" });
+      if (link.studentFirebaseUid !== studentUid) return res.status(403).json({ message: "Not authorized" });
+
+      // Get the existing ACTIVE OTP (if soultee already generated one)
+      const existing = await FollowUpOtp.findOne({ roomId, status: "ACTIVE" }).lean();
+
+      // Notify soultee — include otp so they can see it again on their screen
+      io.to(`soultee:${link.soulteeFirebaseUid}`).emit("followup_resend_requested", {
+        roomId,
+        otp: existing?.otp ?? null,
+      });
+
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   return router;
 }

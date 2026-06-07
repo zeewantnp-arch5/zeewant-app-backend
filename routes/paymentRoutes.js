@@ -5,6 +5,8 @@ import Soultee from "../models/Soultee.js";
 import UserSubscription from "../models/UserSubscription.js";
 import Session from "../models/Session.js";
 import SystemSettings from "../models/SystemSettings.js";
+import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
+import FollowUpOtp from "../models/FollowUpCode.js";
 import { buildEsewaFormParams, verifyEsewaCallback } from "../services/esewaService.js";
 import { initiateKhaltiPayment, verifyKhaltiPayment } from "../services/khaltiService.js";
 import { sendPushNotification } from "../services/fcmService.js";
@@ -56,6 +58,21 @@ async function activateSubscription(payment, io = null) {
     const commissionRate    = await getCommissionRate();
     const soulteeEarnings   = +(payment.amount * (1 - commissionRate / 100)).toFixed(2);
     const platformEarnings  = +(payment.amount * commissionRate / 100).toFixed(2);
+
+    // New payment = full reset: unlock chat, reactivate ended link, expire old OTPs
+    const existingLink = await StudentSoulteeLink.findOne({
+      soulteeFirebaseUid: payment.soulteeId,
+      studentFirebaseUid: payment.userId,
+    }).lean().catch(() => null);
+    if (existingLink) {
+      const resetFields = { chatLocked: false };
+      if (existingLink.status === "ended") resetFields.status = "active";
+      await StudentSoulteeLink.updateOne({ _id: existingLink._id }, resetFields).catch(() => {});
+      await FollowUpOtp.updateMany(
+        { roomId: existingLink._id.toString(), status: { $in: ["ACTIVE", "USED"] } },
+        { status: "EXPIRED" }
+      ).catch(() => {});
+    }
 
     const sess = await Session.create({
       soulteeFirebaseUid: payment.soulteeId,
