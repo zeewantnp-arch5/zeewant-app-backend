@@ -16,8 +16,15 @@ import {
 } from "../services/messageService.js";
 import { createNotification, emitToUser } from "../services/notificationService.js";
 import { syncProfileToRTDB } from "../config/firebase.js";
+import SystemSettings from "../models/SystemSettings.js";
 
-const PLATFORM_COMMISSION_RATE = 10; // 10% platform fee
+const PLATFORM_COMMISSION_RATE = 10; // fallback if DB setting missing
+
+async function getPlatformCommissionRate() {
+  const s = await SystemSettings.findOne({ key: "platform_commission_rate" }).lean();
+  const rate = Number(s?.value);
+  return Number.isFinite(rate) && rate >= 0 && rate <= 100 ? rate : PLATFORM_COMMISSION_RATE;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Factory — receives io so every route handler can emit socket events
@@ -287,6 +294,9 @@ export default function createSoulteeDashboardRoutes(io) {
 
       const defaultFee = Number(soultee?.feePerSession || 0);
 
+      // ── Dynamic commission from DB ────────────────────────────────────────
+      const commissionRate = await getPlatformCommissionRate();
+
       // ── Full earnings aggregate ───────────────────────────────────────────
       const [agg] = await Session.aggregate([
         { $match: { soulteeFirebaseUid: soulteeUid } },
@@ -295,12 +305,11 @@ export default function createSoulteeDashboardRoutes(io) {
             status: 1,
             sessionType: 1,
             scheduledAt: 1,
-            adminPaid: 1,
-            effectiveFee: { $ifNull: ["$sessionFee", defaultFee] },
+            // Use pre-stored soulteeEarnings; fall back to DB commission rate for old sessions
             soulteeEarnings: {
               $ifNull: [
                 "$soulteeEarnings",
-                { $multiply: [{ $ifNull: ["$sessionFee", defaultFee] }, { $subtract: [1, { $divide: [PLATFORM_COMMISSION_RATE, 100] }] }] },
+                { $multiply: [{ $ifNull: ["$sessionFee", defaultFee] }, { $subtract: [1, { $divide: [commissionRate, 100] }] }] },
               ],
             },
           },
@@ -313,22 +322,8 @@ export default function createSoulteeDashboardRoutes(io) {
             chatSessions:        { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $eq: ["$sessionType","chat"] }] }, 1, 0] } },
             voiceSessions:       { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $eq: ["$sessionType","voice"] }] }, 1, 0] } },
             videoSessions:       { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $eq: ["$sessionType","video"] }] }, 1, 0] } },
-            // earningsToBeReceived = active/upcoming (full fee) + completed but admin hasn't paid yet (soultee's share)
-            earningsToBeReceived: {
-              $sum: {
-                $cond: [
-                  { $in: ["$status", ["upcoming", "ongoing"]] },
-                  "$effectiveFee",
-                  {
-                    $cond: [
-                      { $and: [{ $eq: ["$status", "completed"] }, { $ne: ["$adminPaid", true] }] },
-                      "$soulteeEarnings",
-                      0,
-                    ],
-                  },
-                ],
-              },
-            },
+            // soultee's share only — never the gross student payment
+            earningsToBeReceived: { $sum: { $cond: [{ $in: ["$status", ["upcoming", "ongoing"]] }, "$soulteeEarnings", 0] } },
             thisMonthEarnings:   { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $gte: ["$scheduledAt", monthStart] }] }, "$soulteeEarnings", 0] } },
             todayEarnings:       { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $gte: ["$scheduledAt", todayStart] }, { $lte: ["$scheduledAt", todayEnd] }] }, "$soulteeEarnings", 0] } },
             chatEarnings:        { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $eq: ["$sessionType","chat"] }] }, "$soulteeEarnings", 0] } },
@@ -347,8 +342,8 @@ export default function createSoulteeDashboardRoutes(io) {
       const repeatClients = Math.max(0, completedCount - uniqueClients);
       const avgSessionMins = completedCount > 0 ? Math.round((agg?.totalDurationMins ?? 0) / completedCount) : 0;
 
-      // ── Wallet — only admin-confirmed payments count here ─────────────────
-      const earnedSoFar     = wallet?.totalEarned ?? 0;   // incremented only when admin pays
+      // ── Wallet — auto-updated when session completes ─────────────────────
+      const earnedSoFar     = wallet?.totalEarned ?? 0;   // incremented on session completion
       const totalWithdrawn  = wallet?.totalWithdrawn ?? 0;
       const pendingWd       = wallet?.pendingWithdrawals ?? 0;
       const availableBalance = Math.max(0, earnedSoFar - totalWithdrawn - pendingWd);
@@ -1337,14 +1332,18 @@ export default function createSoulteeDashboardRoutes(io) {
           const s = await Session.findOne({ _id: req.params.sessionId });
           if (!s || s.status !== "ongoing") return;
           const fee = s.sessionFee || 0;
-          const rate = s.commissionRate ?? PLATFORM_COMMISSION_RATE;
+          const rate = s.commissionRate ?? await getPlatformCommissionRate();
           const soulteeEarnings = +(fee * (1 - rate / 100)).toFixed(2);
           const platformEarnings = +(fee * rate / 100).toFixed(2);
           s.status = "completed";
           s.soulteeEarnings = soulteeEarnings;
           s.platformEarnings = platformEarnings;
-          // adminPaid stays false — wallet only updates when admin explicitly pays the soultee
           await s.save();
+          await SessionWallet.findOneAndUpdate(
+            { soulteeFirebaseUid: req.params.soulteeUid },
+            { $inc: { totalEarned: soulteeEarnings } },
+            { upsert: true }
+          );
           io.to(`session:${req.params.sessionId}`).emit("session:completed", { sessionId: req.params.sessionId });
           io.to(`soultee:${req.params.soulteeUid}`).emit("stats:updated");
         } catch (autoErr) {
@@ -1372,15 +1371,20 @@ export default function createSoulteeDashboardRoutes(io) {
       if (session.status === "completed") return res.json({ session });
 
       const fee      = session.sessionFee || 0;
-      const rate     = session.commissionRate ?? PLATFORM_COMMISSION_RATE;
+      const rate     = session.commissionRate ?? await getPlatformCommissionRate();
       const soulteeEarnings  = +(fee * (1 - rate / 100)).toFixed(2);
       const platformEarnings = +(fee * rate / 100).toFixed(2);
 
       session.status          = "completed";
       session.soulteeEarnings = soulteeEarnings;
       session.platformEarnings= platformEarnings;
-      // adminPaid stays false — wallet only updates when admin explicitly pays the soultee
       await session.save();
+
+      await SessionWallet.findOneAndUpdate(
+        { soulteeFirebaseUid: req.params.soulteeUid },
+        { $inc: { totalEarned: soulteeEarnings } },
+        { upsert: true }
+      );
 
       io.to(`session:${req.params.sessionId}`).emit("session:completed", {
         sessionId: req.params.sessionId,

@@ -4,9 +4,16 @@ import Payment from "../models/Payment.js";
 import Soultee from "../models/Soultee.js";
 import UserSubscription from "../models/UserSubscription.js";
 import Session from "../models/Session.js";
+import SystemSettings from "../models/SystemSettings.js";
 import { buildEsewaFormParams, verifyEsewaCallback } from "../services/esewaService.js";
 import { initiateKhaltiPayment, verifyKhaltiPayment } from "../services/khaltiService.js";
 import { sendPushNotification } from "../services/fcmService.js";
+
+async function getCommissionRate() {
+  const s = await SystemSettings.findOne({ key: "platform_commission_rate" }).lean();
+  const rate = Number(s?.value);
+  return Number.isFinite(rate) && rate >= 0 && rate <= 100 ? rate : 10;
+}
 
 const router = express.Router();
 
@@ -44,18 +51,25 @@ async function activateSubscription(payment, io = null) {
     expiryDate,
   });
 
-  // Create an upcoming session so "Earnings To Be Received" shows immediately
+  // Create an upcoming session — pre-calculate soulteeEarnings using DB commission rate
   try {
+    const commissionRate    = await getCommissionRate();
+    const soulteeEarnings   = +(payment.amount * (1 - commissionRate / 100)).toFixed(2);
+    const platformEarnings  = +(payment.amount * commissionRate / 100).toFixed(2);
+
     const sess = await Session.create({
       soulteeFirebaseUid: payment.soulteeId,
       studentFirebaseUid: payment.userId,
-      scheduledAt:    new Date(),
-      durationMinutes: soultee?.durationMinutes || 30,
-      sessionFee:     payment.amount,
-      sessionType:    "chat",
-      status:         "upcoming",
+      scheduledAt:      new Date(),
+      durationMinutes:  soultee?.durationMinutes || 30,
+      sessionFee:       payment.amount,
+      commissionRate,
+      soulteeEarnings,
+      platformEarnings,
+      sessionType:      "chat",
+      status:           "upcoming",
     });
-    console.log(`[Payment] Session created: ${sess._id} fee=${sess.sessionFee} soultee=${payment.soulteeId}`);
+    console.log(`[Payment] Session created: ${sess._id} fee=${sess.sessionFee} commission=${commissionRate}% soulteeEarnings=${soulteeEarnings} soultee=${payment.soulteeId}`);
   } catch (err) {
     console.error("[activateSubscription] Session create error:", err.message);
   }

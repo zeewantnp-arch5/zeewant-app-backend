@@ -47,6 +47,8 @@ systemSettingsSchema.statics.ensureDefaults = async function () {
     // Integrations
     { key: "firebase_auth_enabled",      value: true,   category: "integrations",  label: "Firebase Auth",                description: "Firebase phone authentication" },
     { key: "socket_io_enabled",          value: true,   category: "integrations",  label: "Socket.io Real-time",          description: "Real-time Socket.io connection" },
+    // Revenue
+    { key: "platform_commission_rate",   value: 10,     category: "general",       label: "Platform Commission %",        description: "Commission % deducted from each session fee. Remaining goes to soultee." },
   ];
 
   await this.insertMany(defaults);
