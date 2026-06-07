@@ -92,19 +92,27 @@ export default function createFollowUpRoutes(io) {
   });
 
   // ─── POST /api/follow-up/:roomId/request-otp ───────────────────────────────
-  // Student-initiated. Firebase generates + stores the OTP (5-min TTL).
+  // Student OR soultee-initiated. Firebase generates + stores the OTP (5-min TTL).
   // Nodemailer delivers it to the student's registered email.
   router.post("/:roomId/request-otp", async (req, res) => {
     try {
-      const { studentUid } = req.body;
+      const { studentUid, soulteeUid } = req.body;
       const { roomId } = req.params;
 
-      if (!studentUid) return res.status(400).json({ message: "studentUid is required" });
+      if (!studentUid && !soulteeUid)
+        return res.status(400).json({ message: "studentUid or soulteeUid is required" });
 
       const link = await StudentSoulteeLink.findOne({ _id: roomId }).lean();
       if (!link) return res.status(404).json({ message: "Room not found" });
-      if (link.studentFirebaseUid !== studentUid)
+
+      // Verify caller identity: student calling for themselves, or soultee for their student
+      if (studentUid && link.studentFirebaseUid !== studentUid)
         return res.status(403).json({ message: "Not authorized" });
+      if (soulteeUid && link.soulteeFirebaseUid !== soulteeUid)
+        return res.status(403).json({ message: "Not authorized" });
+
+      // Always send OTP to the student regardless of who initiated
+      const resolvedStudentUid = link.studentFirebaseUid;
 
       // Verify the session is locked / completed
       const isLocked = link.chatLocked === true || link.status === "ended";
@@ -143,7 +151,7 @@ export default function createFollowUpRoutes(io) {
       const durationMinutes = session?.durationMinutes ?? 60;
 
       // Firebase generates, stores, and returns a 6-digit OTP (5-min TTL)
-      const otp = await storeOTP(studentUid);
+      const otp = await storeOTP(resolvedStudentUid);
 
       // Store session metadata in MongoDB (no OTP validation logic — Firebase owns that)
       await FollowUpOtp.create({
@@ -158,7 +166,7 @@ export default function createFollowUpRoutes(io) {
       // Get student email from Firebase Auth
       let studentEmail;
       try {
-        const userRecord = await admin.auth().getUser(studentUid);
+        const userRecord = await admin.auth().getUser(resolvedStudentUid);
         studentEmail = userRecord.email;
       } catch {
         return res.status(400).json({ message: "Could not retrieve student account details" });
@@ -169,7 +177,7 @@ export default function createFollowUpRoutes(io) {
       // Send OTP via nodemailer
       await sendFollowUpOtpEmail(studentEmail, otp, durationMinutes);
 
-      io.to(`student:${studentUid}`).emit("otp_sent", { roomId });
+      io.to(`student:${resolvedStudentUid}`).emit("otp_sent", { roomId });
 
       res.json({ success: true, message: "Verification code sent to your email" });
     } catch (err) {
