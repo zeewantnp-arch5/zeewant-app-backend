@@ -133,7 +133,7 @@ export default function createFollowUpRoutes(io) {
   // Nodemailer delivers it to the student's registered email.
   router.post("/:roomId/request-otp", async (req, res) => {
     try {
-      const { studentUid, soulteeUid, studentEmail } = req.body;
+      const { studentUid, soulteeUid, studentEmail, email, userEmail, contactEmail } = req.body;
       const { roomId } = req.params;
 
       if (!studentUid && !soulteeUid)
@@ -191,7 +191,11 @@ export default function createFollowUpRoutes(io) {
       const otp          = generateOtp();
       const otpExpiresAt = new Date(Date.now() + OTP_TTL_MS);
 
-      const emailFromBody = normalizeEmail(studentEmail);
+      const emailFromBody =
+        normalizeEmail(studentEmail) ||
+        normalizeEmail(email) ||
+        normalizeEmail(userEmail) ||
+        normalizeEmail(contactEmail);
       const emailFromLink = normalizeEmail(link.studentEmail);
       const emailFromHistory = await resolveStudentEmail(resolvedStudentUid);
       const resolvedStudentEmail = emailFromBody || emailFromLink || emailFromHistory;
@@ -227,7 +231,11 @@ export default function createFollowUpRoutes(io) {
 
       io.to(`student:${resolvedStudentUid}`).emit("otp_sent", { roomId });
 
-      res.json({ success: true, message: "Verification code sent to your email" });
+      res.json({
+        success: true,
+        message: "Verification code sent to your email",
+        sentTo: resolvedStudentEmail,
+      });
     } catch (err) {
       console.error("[followUp] request-otp error:", err.message);
       res.status(500).json({ message: err.message });
