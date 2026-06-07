@@ -308,6 +308,7 @@ export default function createSoulteeDashboardRoutes(io) {
           $group: {
             _id: null,
             completedSessions:   { $sum: { $cond: [{ $eq: ["$status", "completed"] }, 1, 0] } },
+            pendingSessions:     { $sum: { $cond: [{ $in: ["$status", ["upcoming", "ongoing"]] }, 1, 0] } },
             chatSessions:        { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $eq: ["$sessionType","chat"] }] }, 1, 0] } },
             voiceSessions:       { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $eq: ["$sessionType","voice"] }] }, 1, 0] } },
             videoSessions:       { $sum: { $cond: [{ $and: [{ $eq: ["$status","completed"] }, { $eq: ["$sessionType","video"] }] }, 1, 0] } },
@@ -341,6 +342,7 @@ export default function createSoulteeDashboardRoutes(io) {
 
       res.json({
         completedSessions:    completedCount,
+        pendingSessions:      agg?.pendingSessions ?? 0,
         chatSessions:         agg?.chatSessions  ?? 0,
         voiceSessions:        agg?.voiceSessions ?? 0,
         videoSessions:        agg?.videoSessions ?? 0,
