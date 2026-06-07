@@ -2,18 +2,54 @@ import express from "express";
 import FollowUpOtp from "../models/FollowUpCode.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import Session from "../models/Session.js";
-import admin from "../config/firebase.js";
+import admin, { storeOTP, verifyOTP } from "../config/firebase.js";
 import { sendFollowUpOtpEmail } from "../services/emailService.js";
 
-const OTP_EXPIRY_MS    = 10 * 60 * 1000; // 10 min to enter OTP after receiving
-const RESEND_THROTTLE  = 30 * 1000;       // 30 s minimum between resend requests
-
-function generateOtp() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-}
+const RESEND_THROTTLE = 30 * 1000; // 30 s minimum between resend requests
 
 export default function createFollowUpRoutes(io) {
   const router = express.Router();
+
+  // ─── GET /api/follow-up/:roomId/access-check ───────────────────────────────
+  // Lightweight endpoint called before opening chat.
+  // Returns { canAccess: bool, reason: string }
+  router.get("/:roomId/access-check", async (req, res) => {
+    try {
+      const { roomId } = req.params;
+      const link = await StudentSoulteeLink.findOne({ _id: roomId }).lean();
+      if (!link) return res.json({ canAccess: false, reason: "no_link" });
+
+      // Active follow-up (USED + not yet expired) always grants access
+      const activeFollowUp = await FollowUpOtp.findOne({
+        roomId,
+        status:    "USED",
+        expiresAt: { $gt: new Date() },
+      }).lean();
+      if (activeFollowUp) return res.json({ canAccess: true, reason: "followup_active" });
+
+      // Chat is locked if the flag is set OR link.status is "ended"
+      const isLocked = link.chatLocked === true || link.status === "ended";
+
+      if (isLocked) {
+        // Confirm there is a completed session (not just a stale lock)
+        const completedSession = await Session.findOne({
+          soulteeFirebaseUid: link.soulteeFirebaseUid,
+          studentFirebaseUid: link.studentFirebaseUid,
+          status: "completed",
+        }).lean();
+        if (completedSession) {
+          return res.json({ canAccess: false, reason: "both_completed" });
+        }
+      }
+
+      res.json({
+        canAccess: !isLocked,
+        reason:    isLocked ? "chat_locked" : "session_active",
+      });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
 
   // ─── GET /api/follow-up/:roomId/status ─────────────────────────────────────
   router.get("/:roomId/status", async (req, res) => {
@@ -55,8 +91,8 @@ export default function createFollowUpRoutes(io) {
   });
 
   // ─── POST /api/follow-up/:roomId/request-otp ───────────────────────────────
-  // Student-initiated: generate OTP and send to student's registered email.
-  // No SoulTee action required.
+  // Student-initiated. Firebase generates + stores the OTP (5-min TTL).
+  // Nodemailer delivers it to the student's registered email.
   router.post("/:roomId/request-otp", async (req, res) => {
     try {
       const { studentUid } = req.body;
@@ -69,7 +105,7 @@ export default function createFollowUpRoutes(io) {
       if (link.studentFirebaseUid !== studentUid)
         return res.status(403).json({ message: "Not authorized" });
 
-      // Verify the session is actually completed / locked
+      // Verify the session is locked / completed
       const isLocked = link.chatLocked === true || link.status === "ended";
       if (!isLocked) {
         const sess = await Session.findOne({
@@ -85,22 +121,19 @@ export default function createFollowUpRoutes(io) {
       if (activeFollowUp)
         return res.status(409).json({ message: "A follow-up session is already active" });
 
-      // Resend throttle: reject if an ACTIVE OTP was created less than 30 s ago
-      const existingActive = await FollowUpOtp.findOne({ roomId, status: "ACTIVE" }).lean();
-      if (existingActive) {
-        const age = Date.now() - new Date(existingActive.createdAt).getTime();
+      // Resend throttle: check MongoDB record createdAt
+      const existingMeta = await FollowUpOtp.findOne({ roomId, status: "ACTIVE" }).lean();
+      if (existingMeta) {
+        const age = Date.now() - new Date(existingMeta.createdAt).getTime();
         if (age < RESEND_THROTTLE) {
           const remainingSeconds = Math.ceil((RESEND_THROTTLE - age) / 1000);
-          return res.status(429).json({
-            message: `Please wait ${remainingSeconds}s before resending`,
-            remainingSeconds,
-          });
+          return res.status(429).json({ message: `Please wait ${remainingSeconds}s before resending`, remainingSeconds });
         }
-        // Expire old OTP before issuing a new one
-        await FollowUpOtp.updateOne({ _id: existingActive._id }, { status: "EXPIRED" });
+        // Expire the old metadata record; Firebase will overwrite its OTP entry
+        await FollowUpOtp.updateOne({ _id: existingMeta._id }, { status: "EXPIRED" });
       }
 
-      // Get session duration from the most recent completed session
+      // Get session duration
       const session = await Session.findOne({
         soulteeFirebaseUid: link.soulteeFirebaseUid,
         studentFirebaseUid: link.studentFirebaseUid,
@@ -108,17 +141,12 @@ export default function createFollowUpRoutes(io) {
       }).sort({ createdAt: -1 }).lean();
       const durationMinutes = session?.durationMinutes ?? 60;
 
-      // Generate a unique 6-digit OTP
-      let otp;
-      for (let i = 0; i < 10; i++) {
-        const candidate = generateOtp();
-        const clash = await FollowUpOtp.exists({ otp: candidate, status: "ACTIVE" });
-        if (!clash) { otp = candidate; break; }
-      }
-      if (!otp) return res.status(500).json({ message: "Failed to generate OTP. Please retry." });
+      // Firebase generates, stores, and returns a 6-digit OTP (5-min TTL)
+      const otp = await storeOTP(studentUid);
 
+      // Store session metadata in MongoDB (no OTP validation logic — Firebase owns that)
       await FollowUpOtp.create({
-        otp,
+        otp:                otp, // kept for audit trail only
         roomId,
         sessionId:          session?._id ?? null,
         durationMinutes,
@@ -126,7 +154,7 @@ export default function createFollowUpRoutes(io) {
         soulteeFirebaseUid: link.soulteeFirebaseUid,
       });
 
-      // Get student's email from Firebase Auth
+      // Get student email from Firebase Auth
       let studentEmail;
       try {
         const userRecord = await admin.auth().getUser(studentUid);
@@ -137,10 +165,9 @@ export default function createFollowUpRoutes(io) {
       if (!studentEmail)
         return res.status(400).json({ message: "No email address registered for this account" });
 
-      // Send OTP via email
+      // Send OTP via nodemailer
       await sendFollowUpOtpEmail(studentEmail, otp, durationMinutes);
 
-      // Notify student's personal socket room
       io.to(`student:${studentUid}`).emit("otp_sent", { roomId });
 
       res.json({ success: true, message: "Verification code sent to your email" });
@@ -151,8 +178,8 @@ export default function createFollowUpRoutes(io) {
   });
 
   // ─── POST /api/follow-up/:roomId/verify-otp ────────────────────────────────
-  // Student submits the OTP received by email. On success the follow-up session
-  // starts and chat is unlocked for the original session's duration.
+  // Firebase validates the OTP (TTL + attempt-count). On success, follow-up
+  // session starts for the original session's duration.
   router.post("/:roomId/verify-otp", async (req, res) => {
     try {
       const { studentUid, otp } = req.body;
@@ -161,22 +188,14 @@ export default function createFollowUpRoutes(io) {
       if (!studentUid || !otp)
         return res.status(400).json({ message: "studentUid and otp are required" });
 
-      const record = await FollowUpOtp.findOne({
-        roomId,
-        otp:    String(otp).trim(),
-        status: "ACTIVE",
-      });
-      if (!record) return res.status(404).json({ message: "Invalid or already used code" });
-      if (record.studentFirebaseUid !== studentUid)
-        return res.status(403).json({ message: "Code is not valid for this account" });
+      // Firebase RTDB validates: TTL, attempt count, code match
+      const { valid, reason } = await verifyOTP(studentUid, String(otp).trim());
+      if (!valid) return res.status(400).json({ message: reason ?? "Invalid or expired code" });
 
-      // OTP TTL check (10 minutes from creation)
-      const otpAge = Date.now() - record.createdAt.getTime();
-      if (otpAge > OTP_EXPIRY_MS) {
-        record.status = "EXPIRED";
-        await record.save();
-        return res.status(410).json({ message: "Code has expired. Please request a new one." });
-      }
+      // Find the MongoDB metadata record
+      const record = await FollowUpOtp.findOne({ roomId, status: "ACTIVE" });
+      if (!record)
+        return res.status(404).json({ message: "Session metadata not found. Please request a new code." });
 
       const durationMs  = record.durationMinutes * 60 * 1000;
       const activatedAt = new Date();
@@ -193,7 +212,6 @@ export default function createFollowUpRoutes(io) {
       if (linkDoc?.status === "ended") updateFields.status = "active";
       await StudentSoulteeLink.updateOne({ _id: roomId }, updateFields);
 
-      // Notify both participants
       io.to(roomId).emit("otp_verified",       { roomId });
       io.to(roomId).emit("followup_activated", {
         roomId,
@@ -203,7 +221,7 @@ export default function createFollowUpRoutes(io) {
       });
       console.log(`[followUp] Follow-up started — room ${roomId}, duration ${record.durationMinutes} min`);
 
-      // Server-side auto-expire when follow-up duration ends
+      // Server-side auto-expire
       setTimeout(async () => {
         try {
           const r = await FollowUpOtp.findById(record._id);
