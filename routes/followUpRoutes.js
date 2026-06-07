@@ -37,8 +37,22 @@ export default function createFollowUpRoutes(io) {
           soulteeFirebaseUid: link.soulteeFirebaseUid,
           studentFirebaseUid: link.studentFirebaseUid,
         }).sort({ createdAt: -1 }).lean();
+
         if (latestSession?.status === "completed") {
-          return res.json({ canAccess: false, reason: "both_completed" });
+          // A follow-up that was truly activated (used) and then expired has activatedAt set.
+          // A superseded/re-requested OTP that was never verified has activatedAt = null.
+          const trulyExpiredFollowUp = await FollowUpOtp.findOne({
+            roomId,
+            status:      "EXPIRED",
+            activatedAt: { $ne: null },
+          }).lean();
+
+          if (trulyExpiredFollowUp) {
+            // Both session AND follow-up are done — new payment required
+            return res.json({ canAccess: false, reason: "followup_expired" });
+          }
+          // Session ended but follow-up not yet used — go to chat, show Follow-Up button
+          return res.json({ canAccess: false, reason: "session_completed" });
         }
       }
 
@@ -59,8 +73,10 @@ export default function createFollowUpRoutes(io) {
       if (!link) return res.status(404).json({ message: "Room not found" });
 
       const [usedOtp, expiredOtp, latestSession] = await Promise.all([
-        FollowUpOtp.findOne({ roomId, status: "USED"    }).lean(),
-        FollowUpOtp.findOne({ roomId, status: "EXPIRED" }).lean(),
+        FollowUpOtp.findOne({ roomId, status: "USED" }).lean(),
+        // Only count as "expired" if it was truly activated (activatedAt set).
+        // OTPs that were requested but never verified have activatedAt=null — not a real expiry.
+        FollowUpOtp.findOne({ roomId, status: "EXPIRED", activatedAt: { $ne: null } }).lean(),
         Session.findOne({
           soulteeFirebaseUid: link.soulteeFirebaseUid,
           studentFirebaseUid: link.studentFirebaseUid,
