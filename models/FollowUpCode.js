@@ -5,6 +5,7 @@ const followUpOtpSchema = new mongoose.Schema(
     otp:                { type: String, required: true, unique: true, index: true },
     roomId:             { type: String, required: true, index: true },
     sessionId:          { type: mongoose.Schema.Types.ObjectId, ref: "Session", default: null },
+    studentEmail:       { type: String, default: "", trim: true, lowercase: true },
     studentFirebaseUid: { type: String, required: true },
     soulteeFirebaseUid: { type: String, required: true },
 

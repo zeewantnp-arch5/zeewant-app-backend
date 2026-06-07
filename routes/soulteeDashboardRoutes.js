@@ -409,11 +409,13 @@ export default function createSoulteeDashboardRoutes(io) {
   // ───────────────────────────────────────────────────────────────────────────
   //  STUDENT → SOULTEE REQUEST
   //  POST /api/soultee-dashboard/request
-  //  Body: { studentFirebaseUid, studentName, soulteeFirebaseUid, requestMessage }
+  //  Body: { studentFirebaseUid, studentName, studentEmail?, soulteeFirebaseUid, requestMessage }
   // ───────────────────────────────────────────────────────────────────────────
   router.post("/request", async (req, res) => {
     try {
-      const { studentFirebaseUid, studentName, soulteeFirebaseUid, requestMessage } = req.body;
+      const { studentFirebaseUid, studentName, studentEmail, soulteeFirebaseUid, requestMessage } = req.body;
+      const normalizedStudentEmail =
+        typeof studentEmail === "string" ? studentEmail.trim().toLowerCase() : "";
       if (!studentFirebaseUid || !soulteeFirebaseUid) {
         return res.status(400).json({ message: "studentFirebaseUid and soulteeFirebaseUid are required" });
       }
@@ -435,6 +437,7 @@ export default function createSoulteeDashboardRoutes(io) {
         // ended or declined → allow re-request
         existing.status         = "pending";
         existing.requestMessage = requestMessage || "";
+        if (normalizedStudentEmail) existing.studentEmail = normalizedStudentEmail;
         existing.requestedAt    = new Date();
         existing.acceptedAt     = undefined;
         existing.endedAt        = undefined;
@@ -444,6 +447,7 @@ export default function createSoulteeDashboardRoutes(io) {
         link = await StudentSoulteeLink.create({
           studentFirebaseUid,
           studentName:    studentName || "Student",
+          studentEmail:   normalizedStudentEmail,
           soulteeFirebaseUid,
           soulteeMongoId: soultee._id,
           requestMessage: requestMessage || "",

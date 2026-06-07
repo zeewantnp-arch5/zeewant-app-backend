@@ -3,7 +3,6 @@ import express from "express";
 import FollowUpOtp from "../models/FollowUpCode.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import Session from "../models/Session.js";
-import admin from "../config/firebase.js";
 import { sendFollowUpOtpEmail } from "../services/emailService.js";
 
 const OTP_TTL_MS      = 10 * 60 * 1000; // OTP valid for 10 minutes
@@ -22,27 +21,11 @@ function normalizeEmail(value) {
 }
 
 async function resolveStudentEmail(studentUid) {
-  // Prefer the profile email saved in Firestore users/{uid}.
-  if (admin.apps.length) {
-    try {
-      const userSnap = await admin.firestore().collection("users").doc(studentUid).get();
-      const userData = userSnap.data() || {};
-      const profileEmail =
-        normalizeEmail(userData.email) ||
-        normalizeEmail(userData.userEmail) ||
-        normalizeEmail(userData.contactEmail);
-      if (profileEmail) return profileEmail;
-    } catch {
-      // Fall back to Firebase Auth email lookup below.
-    }
-  }
-
-  try {
-    const userRecord = await admin.auth().getUser(studentUid);
-    return normalizeEmail(userRecord.email);
-  } catch {
-    return null;
-  }
+  const recentOtp = await FollowUpOtp.findOne({ studentFirebaseUid: studentUid })
+    .sort({ createdAt: -1 })
+    .select("studentEmail")
+    .lean();
+  return normalizeEmail(recentOtp?.studentEmail);
 }
 
 export default function createFollowUpRoutes(io) {
@@ -150,7 +133,7 @@ export default function createFollowUpRoutes(io) {
   // Nodemailer delivers it to the student's registered email.
   router.post("/:roomId/request-otp", async (req, res) => {
     try {
-      const { studentUid, soulteeUid } = req.body;
+      const { studentUid, soulteeUid, studentEmail } = req.body;
       const { roomId } = req.params;
 
       if (!studentUid && !soulteeUid)
@@ -208,6 +191,25 @@ export default function createFollowUpRoutes(io) {
       const otp          = generateOtp();
       const otpExpiresAt = new Date(Date.now() + OTP_TTL_MS);
 
+      const emailFromBody = normalizeEmail(studentEmail);
+      const emailFromLink = normalizeEmail(link.studentEmail);
+      const emailFromHistory = await resolveStudentEmail(resolvedStudentUid);
+      const resolvedStudentEmail = emailFromBody || emailFromLink || emailFromHistory;
+
+      if (!resolvedStudentEmail) {
+        return res.status(400).json({
+          message: "No email address found in MongoDB profile. Please update student email first.",
+        });
+      }
+
+      // Keep studentEmail in link for all future OTP sends (Firebase-independent).
+      if (resolvedStudentEmail !== emailFromLink) {
+        await StudentSoulteeLink.updateOne(
+          { _id: roomId },
+          { $set: { studentEmail: resolvedStudentEmail } }
+        ).catch(() => {});
+      }
+
       // Store OTP + metadata in MongoDB — MongoDB is the sole source of truth
       await FollowUpOtp.create({
         otp,
@@ -215,17 +217,13 @@ export default function createFollowUpRoutes(io) {
         sessionId:          session?._id ?? null,
         durationMinutes,
         otpExpiresAt,
+        studentEmail:       resolvedStudentEmail,
         studentFirebaseUid: link.studentFirebaseUid,
         soulteeFirebaseUid: link.soulteeFirebaseUid,
       });
 
-      // Resolve student email from profile first, then Firebase Auth fallback.
-      const studentEmail = await resolveStudentEmail(resolvedStudentUid);
-      if (!studentEmail)
-        return res.status(400).json({ message: "No email address registered for this account" });
-
       // Send OTP via nodemailer
-      await sendFollowUpOtpEmail(studentEmail, otp, durationMinutes);
+      await sendFollowUpOtpEmail(resolvedStudentEmail, otp, durationMinutes);
 
       io.to(`student:${resolvedStudentUid}`).emit("otp_sent", { roomId });
 

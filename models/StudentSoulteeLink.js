@@ -5,6 +5,7 @@ const studentSoulteeLinkSchema = new mongoose.Schema(
   {
     studentFirebaseUid: { type: String, required: true },
     studentName: { type: String, default: "Student" },
+    studentEmail: { type: String, default: "", trim: true, lowercase: true },
     soulteeFirebaseUid: { type: String, required: true },
     soulteeMongoId: { type: mongoose.Schema.Types.ObjectId, ref: "Soultee" },
 
