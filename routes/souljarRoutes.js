@@ -777,4 +777,125 @@ router.get("/soulway-ai-report/:userId", async (req, res) => {
   }
 });
 
+///////////////////////////////////////////////////////////
+// 📊 SOULWAY RULE-BASED REPORT (No AI)
+///////////////////////////////////////////////////////////
+
+router.get("/soulway-rule-report/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const allEntries = await Souljar.find({ userId }).sort({ createdAt: -1 });
+
+    if (allEntries.length === 0) {
+      return res.json({
+        success: true,
+        noEntries: true,
+        totalEntries: 0,
+        message: "No Souljar entries found. Start writing in your Souljar first.",
+      });
+    }
+
+    const total = allEntries.length;
+    const totalWords = allEntries.reduce((sum, e) => sum + (e.wordCount || 0), 0);
+
+    // Section 1: Emotional Patterns — mood distribution with percentages
+    const moodCount = {};
+    allEntries.forEach((e) => {
+      if (e.mood) moodCount[e.mood] = (moodCount[e.mood] || 0) + 1;
+    });
+    const emotionalPatterns = Object.entries(moodCount)
+      .sort((a, b) => b[1] - a[1])
+      .map(([emotion, count]) => ({
+        emotion,
+        count,
+        percentage: Math.round((count / total) * 100),
+      }));
+
+    // Section 2: Emotional Triggers — NLP keyword extraction from entry text
+    const emotionalTriggers = extractTextTriggers(allEntries, 10);
+
+    // Section 3: Emotional Themes — topic distribution
+    const topicCount = {};
+    allEntries.forEach((e) => {
+      if (e.topic) topicCount[e.topic] = (topicCount[e.topic] || 0) + 1;
+    });
+    const emotionalThemes = Object.entries(topicCount)
+      .sort((a, b) => b[1] - a[1])
+      .map(([theme, count]) => ({
+        theme,
+        count,
+        percentage: Math.round((count / total) * 100),
+      }));
+
+    // Section 4: Emotional Needs — derived from mood ratios
+    const emotionalNeeds = [];
+    if (total > 0) {
+      const sadRatio = (moodCount["Sad"] || 0) / total;
+      const tiredRatio = (moodCount["Tired"] || 0) / total;
+      const nervousRatio = (moodCount["Nervous"] || 0) / total;
+      const lonelyRatio = (moodCount["Lonely"] || 0) / total;
+
+      if (sadRatio >= 0.25) emotionalNeeds.push("Need Support");
+      if (tiredRatio >= 0.25) emotionalNeeds.push("Need Rest");
+      if (nervousRatio >= 0.2) emotionalNeeds.push("Need Guidance");
+      if (lonelyRatio >= 0.2) emotionalNeeds.push("Need Connection");
+      if (emotionalNeeds.length === 0) emotionalNeeds.push("Emotionally Balanced");
+    }
+
+    // Section 5: Emotional Direction — period comparisons
+    const now = new Date();
+    const positiveSet = new Set(["Great", "Good", "Happy", "Calm", "Relaxed", "Confident", "Focused", "Excited"]);
+    const negativeSet = new Set(["Bad", "Awful", "Sad", "Tired", "Nervous", "Lonely", "Anxious"]);
+
+    const calcPeriodStats = (entries) => {
+      const n = entries.length;
+      if (n === 0) return { totalEntries: 0, positiveEntries: 0, negativeEntries: 0, neutralEntries: 0, stabilityScore: 0 };
+      const mc = {};
+      entries.forEach((e) => { if (e.mood) mc[e.mood] = (mc[e.mood] || 0) + 1; });
+      const positiveEntries = entries.filter((e) => positiveSet.has(e.mood)).length;
+      const negativeEntries = entries.filter((e) => negativeSet.has(e.mood)).length;
+      const sadPct = (mc["Sad"] || 0) / n;
+      const tiredPct = (mc["Tired"] || 0) / n;
+      const stabilityScore = Math.max(0, Math.round(100 - sadPct * 30 - tiredPct * 20));
+      return { totalEntries: n, positiveEntries, negativeEntries, neutralEntries: n - positiveEntries - negativeEntries, stabilityScore };
+    };
+
+    const cutoff7 = new Date(now - 7 * 24 * 60 * 60 * 1000);
+    const cutoff30 = new Date(now - 30 * 24 * 60 * 60 * 1000);
+    const cutoff90 = new Date(now - 90 * 24 * 60 * 60 * 1000);
+
+    const stats7 = calcPeriodStats(allEntries.filter((e) => new Date(e.createdAt) >= cutoff7));
+    const stats30 = calcPeriodStats(allEntries.filter((e) => new Date(e.createdAt) >= cutoff30));
+    const stats90 = calcPeriodStats(allEntries.filter((e) => new Date(e.createdAt) >= cutoff90));
+
+    let trend = "stable";
+    if (stats7.totalEntries > 0 && stats30.totalEntries > 0) {
+      if (stats7.stabilityScore > stats30.stabilityScore + 5) trend = "improving";
+      else if (stats7.stabilityScore < stats30.stabilityScore - 5) trend = "declining";
+    }
+
+    res.json({
+      success: true,
+      noEntries: false,
+      totalEntries: total,
+      totalWords,
+      generatedAt: new Date().toISOString(),
+      emotionalPatterns,
+      emotionalTriggers,
+      emotionalThemes,
+      emotionalNeeds,
+      emotionalDirection: {
+        last7Days: stats7,
+        last30Days: stats30,
+        last90Days: stats90,
+        trend,
+      },
+    });
+  } catch (error) {
+    console.error("Soulway Rule Report Error:", error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
 export default router;
