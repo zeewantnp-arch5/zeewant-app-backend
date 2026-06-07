@@ -77,6 +77,7 @@ async function activateSubscription(payment, io = null) {
     const sess = await Session.create({
       soulteeFirebaseUid: payment.soulteeId,
       studentFirebaseUid: payment.userId,
+      studentName:      existingLink?.studentName || "Student",
       scheduledAt:      new Date(),
       durationMinutes:  soultee?.durationMinutes || 30,
       sessionFee:       payment.amount,
@@ -685,14 +686,19 @@ router.post("/fix-sessions", async (req, res) => {
         sessionFee: payment.amount,
       });
       if (!existing) {
+        const syncLink = await StudentSoulteeLink.findOne({
+          soulteeFirebaseUid: payment.soulteeId,
+          studentFirebaseUid: payment.userId,
+        }).lean().catch(() => null);
         await Session.create({
           soulteeFirebaseUid: payment.soulteeId,
           studentFirebaseUid: payment.userId,
-          scheduledAt: payment.createdAt || new Date(),
+          studentName:  syncLink?.studentName || "Student",
+          scheduledAt:  payment.createdAt || new Date(),
           durationMinutes: 30,
-          sessionFee: payment.amount,
-          sessionType: "chat",
-          status: "upcoming",
+          sessionFee:   payment.amount,
+          sessionType:  "chat",
+          status:       "upcoming",
         });
         created++;
       }

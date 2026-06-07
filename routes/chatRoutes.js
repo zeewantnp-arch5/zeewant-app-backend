@@ -65,13 +65,14 @@ async function isChatLocked(roomId) {
     return !activeFollowUp;
   }
 
-  // Slow path: old sessions where chatLocked was never set
-  const completedSession = await Session.findOne({
+  // Slow path: old sessions where chatLocked was never set.
+  // Only lock if the LATEST session is completed — a new payment creates a new
+  // active session which must override the old completed one.
+  const latestSession = await Session.findOne({
     soulteeFirebaseUid: link.soulteeFirebaseUid,
     studentFirebaseUid: link.studentFirebaseUid,
-    status: "completed",
-  }).lean();
-  if (!completedSession) return false;
+  }).sort({ createdAt: -1 }).lean();
+  if (!latestSession || latestSession.status !== "completed") return false;
 
   const activeFollowUp = await FollowUpOtp.exists({
     roomId: String(roomId),

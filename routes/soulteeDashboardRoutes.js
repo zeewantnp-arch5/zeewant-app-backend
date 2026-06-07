@@ -908,19 +908,28 @@ export default function createSoulteeDashboardRoutes(io) {
         .limit(200)
         .lean();
 
-      // Attach linkId (StudentSoulteeLink._id) so Flutter can open the chat room.
+      // Attach linkId and real studentName from StudentSoulteeLink.
+      // Sessions created before the name-fix may have studentName="Student";
+      // the link always has the correct name from the original request.
       const studentUids = [...new Set(sessions.map((s) => s.studentFirebaseUid))];
       const links = await StudentSoulteeLink.find({
         soulteeFirebaseUid: soulteeUid,
         studentFirebaseUid: { $in: studentUids },
-      }).select("studentFirebaseUid _id").lean();
+      }).select("studentFirebaseUid _id studentName").lean();
 
-      const linkMap = {};
-      for (const l of links) linkMap[l.studentFirebaseUid] = l._id.toString();
+      const linkMap  = {};
+      const nameMap  = {};
+      for (const l of links) {
+        linkMap[l.studentFirebaseUid] = l._id.toString();
+        if (l.studentName && l.studentName !== "Student") {
+          nameMap[l.studentFirebaseUid] = l.studentName;
+        }
+      }
 
       const enriched = sessions.map((s) => ({
         ...s,
-        linkId: linkMap[s.studentFirebaseUid] ?? null,
+        linkId:      linkMap[s.studentFirebaseUid] ?? null,
+        studentName: nameMap[s.studentFirebaseUid] ?? s.studentName ?? "Student",
       }));
 
       res.json({ sessions: enriched, total: enriched.length });
@@ -1310,9 +1319,19 @@ export default function createSoulteeDashboardRoutes(io) {
       const soulteeEarnings = session.soulteeEarnings ??
         fee * (1 - PLATFORM_COMMISSION_RATE / 100);
 
+      // Enrich studentName from link in case Session record has stale "Student"
+      const link = await StudentSoulteeLink.findOne({
+        soulteeFirebaseUid: req.params.soulteeUid,
+        studentFirebaseUid: session.studentFirebaseUid,
+      }).select("studentName").lean();
+      const studentName = (link?.studentName && link.studentName !== "Student")
+        ? link.studentName
+        : session.studentName ?? "Student";
+
       res.json({
         session: {
           ...session,
+          studentName,
           remainingSeconds: remainingSecs,
           soulteeEarnings,
         },

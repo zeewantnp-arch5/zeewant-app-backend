@@ -31,13 +31,13 @@ export default function createFollowUpRoutes(io) {
       const isLocked = link.chatLocked === true || link.status === "ended";
 
       if (isLocked) {
-        // Confirm there is a completed session (not just a stale lock)
-        const completedSession = await Session.findOne({
+        // Only block if the LATEST session is completed.
+        // If the user already paid again (new active session), allow access.
+        const latestSession = await Session.findOne({
           soulteeFirebaseUid: link.soulteeFirebaseUid,
           studentFirebaseUid: link.studentFirebaseUid,
-          status: "completed",
-        }).lean();
-        if (completedSession) {
+        }).sort({ createdAt: -1 }).lean();
+        if (latestSession?.status === "completed") {
           return res.json({ canAccess: false, reason: "both_completed" });
         }
       }
@@ -58,21 +58,22 @@ export default function createFollowUpRoutes(io) {
       const link = await StudentSoulteeLink.findOne({ _id: roomId }).lean();
       if (!link) return res.status(404).json({ message: "Room not found" });
 
-      const [usedOtp, expiredOtp, completedSession] = await Promise.all([
+      const [usedOtp, expiredOtp, latestSession] = await Promise.all([
         FollowUpOtp.findOne({ roomId, status: "USED"    }).lean(),
         FollowUpOtp.findOne({ roomId, status: "EXPIRED" }).lean(),
         Session.findOne({
           soulteeFirebaseUid: link.soulteeFirebaseUid,
           studentFirebaseUid: link.studentFirebaseUid,
-          status: "completed",
         }).sort({ createdAt: -1 }).lean(),
       ]);
 
-      const sessionCompleted = !!completedSession;
+      // Only treat as "session completed" if the LATEST session is completed.
+      // A new payment creates a new active session → override the old completed one.
+      const sessionCompleted = latestSession?.status === "completed";
       const isRawLocked = link.chatLocked === true || link.status === "ended" || sessionCompleted;
       const effectiveLocked = isRawLocked && !usedOtp;
 
-      // Auto-repair chatLocked for old sessions that pre-date this feature
+      // Auto-repair: set chatLocked for old sessions that pre-date this feature
       if (sessionCompleted && !link.chatLocked && link.status !== "ended" && !usedOtp) {
         StudentSoulteeLink.updateOne({ _id: roomId }, { chatLocked: true }).catch(() => {});
       }
@@ -80,8 +81,8 @@ export default function createFollowUpRoutes(io) {
       res.json({
         chatLocked:      effectiveLocked,
         followUpActive:  !!usedOtp,
-        followUpExpired: !usedOtp && !!expiredOtp,
-        durationMinutes: usedOtp?.durationMinutes ?? completedSession?.durationMinutes ?? null,
+        followUpExpired: sessionCompleted && !usedOtp && !!expiredOtp,
+        durationMinutes: usedOtp?.durationMinutes ?? latestSession?.durationMinutes ?? null,
         expiresAt:       usedOtp?.expiresAt   ?? null,
         activatedAt:     usedOtp?.activatedAt ?? null,
       });
