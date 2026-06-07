@@ -1,6 +1,7 @@
 import express from "express";
 import FollowUpOtp from "../models/FollowUpCode.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
+import Session from "../models/Session.js";
 
 function generateOtp() {
   // 6-digit OTP — never starts with 0 (100000–999999)
@@ -17,14 +18,36 @@ export default function createFollowUpRoutes(io) {
       const link = await StudentSoulteeLink.findOne({ _id: roomId }).lean();
       if (!link) return res.status(404).json({ message: "Room not found" });
 
-      const usedOtp    = await FollowUpOtp.findOne({ roomId, status: "USED"    }).lean();
-      const expiredOtp = await FollowUpOtp.findOne({ roomId, status: "EXPIRED" }).lean();
-      const activeOtp  = await FollowUpOtp.findOne({ roomId, status: "ACTIVE"  }).lean();
+      const [usedOtp, expiredOtp, activeOtp, completedSession] = await Promise.all([
+        FollowUpOtp.findOne({ roomId, status: "USED"    }).lean(),
+        FollowUpOtp.findOne({ roomId, status: "EXPIRED" }).lean(),
+        FollowUpOtp.findOne({ roomId, status: "ACTIVE"  }).lean(),
+        // Check if any paid session for this pair is completed (handles old sessions
+        // where chatLocked was not set because our code wasn't deployed yet)
+        Session.findOne({
+          soulteeFirebaseUid: link.soulteeFirebaseUid,
+          studentFirebaseUid: link.studentFirebaseUid,
+          status: "completed",
+        }).lean(),
+      ]);
 
-      // Chat is locked if:
-      // 1. chatLocked flag is explicitly set (new sessions via timer/manual complete), OR
-      // 2. link status is "ended" (soultee used end-session button — old + new sessions)
-      const effectiveLocked = (link.chatLocked === true) || (link.status === "ended");
+      // Chat is locked when ANY of these are true (and no active follow-up):
+      // 1. chatLocked flag explicitly set (timer-expired sessions via new code)
+      // 2. link.status === "ended" (soultee used end-session button)
+      // 3. A paid session is completed but chatLocked was never set (old sessions)
+      const sessionCompleted = !!completedSession;
+      const isRawLocked = link.chatLocked === true
+        || link.status === "ended"
+        || sessionCompleted;
+
+      // Follow-up OTP being USED overrides the lock
+      const effectiveLocked = isRawLocked && !usedOtp;
+
+      // Auto-repair: stamp chatLocked=true for old sessions so future DB checks
+      // don't need the extra Session query
+      if (sessionCompleted && !link.chatLocked && link.status !== "ended" && !usedOtp) {
+        StudentSoulteeLink.updateOne({ _id: roomId }, { chatLocked: true }).catch(() => {});
+      }
 
       res.json({
         chatLocked:      effectiveLocked,
@@ -105,8 +128,12 @@ export default function createFollowUpRoutes(io) {
       record.expiresAt   = expiresAt;
       await record.save();
 
-      // Unlock chat
-      await StudentSoulteeLink.updateOne({ _id: roomId }, { chatLocked: false });
+      // Unlock chat — if link was "ended" (via end-session route) reactivate it so
+      // messageService.getRoomLinkForParticipant() can find it and deliver messages
+      const linkDoc = await StudentSoulteeLink.findOne({ _id: roomId }).lean();
+      const updateFields = { chatLocked: false };
+      if (linkDoc?.status === "ended") updateFields.status = "active";
+      await StudentSoulteeLink.updateOne({ _id: roomId }, updateFields);
 
       io.to(roomId).emit("followup_activated", { roomId, expiresAt: expiresAt.toISOString() });
 

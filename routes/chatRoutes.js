@@ -20,6 +20,8 @@ import {
 } from "../services/messageService.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import Message from "../models/Message.js";
+import Session from "../models/Session.js";
+import FollowUpOtp from "../models/FollowUpCode.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const chatUploadsDir = path.join(__dirname, "../uploads/chat");
@@ -39,6 +41,45 @@ const attachmentUpload = multer({
   storage: attachmentStorage,
   limits: { fileSize: 20 * 1024 * 1024 },
 });
+
+// Returns true when messages must be blocked for this room.
+// Checks (cheapest first):
+//   1. chatLocked flag explicitly set (timer-expired sessions)
+//   2. link.status === "ended" (manual end-session route)
+//   3. Any paid session completed for this pair (old sessions before chatLocked existed)
+// An active follow-up OTP (status=USED, not expired) overrides all of the above.
+async function isChatLocked(roomId) {
+  const link = await StudentSoulteeLink.findOne({ _id: roomId }).lean();
+  if (!link) return false; // unknown room — let messageService handle access
+
+  // Fast path: explicit lock flags
+  const rawLocked = link.chatLocked === true || link.status === "ended";
+
+  // If locked, check whether an active follow-up OTP overrides it
+  if (rawLocked) {
+    const activeFollowUp = await FollowUpOtp.exists({
+      roomId: String(roomId),
+      status: "USED",
+      expiresAt: { $gt: new Date() },
+    });
+    return !activeFollowUp;
+  }
+
+  // Slow path: old sessions where chatLocked was never set
+  const completedSession = await Session.findOne({
+    soulteeFirebaseUid: link.soulteeFirebaseUid,
+    studentFirebaseUid: link.studentFirebaseUid,
+    status: "completed",
+  }).lean();
+  if (!completedSession) return false;
+
+  const activeFollowUp = await FollowUpOtp.exists({
+    roomId: String(roomId),
+    status: "USED",
+    expiresAt: { $gt: new Date() },
+  });
+  return !activeFollowUp;
+}
 
 export default function createChatRoutes(io) {
   const router = express.Router();
@@ -101,9 +142,7 @@ export default function createChatRoutes(io) {
   // ─── POST /api/chat/:roomId/messages — durable send path ───────────────────
   router.post("/:roomId/messages", requireSubscription, async (req, res) => {
     try {
-      // Reject if chat is locked: explicit flag OR link status is "ended"
-      const roomLink = await StudentSoulteeLink.findOne({ _id: req.params.roomId }).lean();
-      if (roomLink?.chatLocked || roomLink?.status === "ended") {
+      if (await isChatLocked(req.params.roomId)) {
         return res.status(403).json({ message: "Session has ended. Chat is locked." });
       }
 
@@ -188,9 +227,7 @@ export default function createChatRoutes(io) {
   // ─── POST /api/chat/:roomId/attachments — upload + send media/file message ─
   router.post("/:roomId/attachments", requireSubscription, attachmentUpload.single("file"), async (req, res) => {
     try {
-      // Reject if chat is locked: explicit flag OR link status is "ended"
-      const roomLinkA = await StudentSoulteeLink.findOne({ _id: req.params.roomId }).lean();
-      if (roomLinkA?.chatLocked || roomLinkA?.status === "ended") {
+      if (await isChatLocked(req.params.roomId)) {
         return res.status(403).json({ message: "Session has ended. Chat is locked." });
       }
 
