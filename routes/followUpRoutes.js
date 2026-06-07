@@ -21,8 +21,13 @@ export default function createFollowUpRoutes(io) {
       const expiredOtp = await FollowUpOtp.findOne({ roomId, status: "EXPIRED" }).lean();
       const activeOtp  = await FollowUpOtp.findOne({ roomId, status: "ACTIVE"  }).lean();
 
+      // Chat is locked if:
+      // 1. chatLocked flag is explicitly set (new sessions via timer/manual complete), OR
+      // 2. link status is "ended" (soultee used end-session button — old + new sessions)
+      const effectiveLocked = (link.chatLocked === true) || (link.status === "ended");
+
       res.json({
-        chatLocked:      link.chatLocked ?? false,
+        chatLocked:      effectiveLocked,
         followUpActive:  !!usedOtp,
         followUpExpired: !usedOtp && !!expiredOtp,
         otpPending:      activeOtp?.otp ?? null,
@@ -45,7 +50,8 @@ export default function createFollowUpRoutes(io) {
       const link = await StudentSoulteeLink.findOne({ _id: roomId }).lean();
       if (!link) return res.status(404).json({ message: "Room not found" });
       if (link.soulteeFirebaseUid !== soulteeUid) return res.status(403).json({ message: "Not authorized" });
-      if (!link.chatLocked) return res.status(400).json({ message: "Session is still active" });
+      const isLocked = link.chatLocked === true || link.status === "ended";
+      if (!isLocked) return res.status(400).json({ message: "Session is still active" });
 
       // Return existing ACTIVE OTP if already generated
       const existing = await FollowUpOtp.findOne({ roomId, status: "ACTIVE" }).lean();

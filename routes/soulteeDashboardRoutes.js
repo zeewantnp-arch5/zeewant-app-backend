@@ -836,6 +836,9 @@ export default function createSoulteeDashboardRoutes(io) {
       // Refresh soultee dashboard stats
       io.to(`soultee:${req.params.soulteeUid}`).emit("stats:updated");
 
+      // Notify both participants that chat is now locked
+      io.to(link._id.toString()).emit("chat_locked", { roomId: link._id.toString() });
+
       res.json({ message: "Student unlinked", link });
     } catch (err) {
       res.status(500).json({ message: err.message });

@@ -101,9 +101,9 @@ export default function createChatRoutes(io) {
   // ─── POST /api/chat/:roomId/messages — durable send path ───────────────────
   router.post("/:roomId/messages", requireSubscription, async (req, res) => {
     try {
-      // Reject if chat is locked after session expiry (follow-up code not active)
+      // Reject if chat is locked: explicit flag OR link status is "ended"
       const roomLink = await StudentSoulteeLink.findOne({ _id: req.params.roomId }).lean();
-      if (roomLink?.chatLocked) {
+      if (roomLink?.chatLocked || roomLink?.status === "ended") {
         return res.status(403).json({ message: "Session has ended. Chat is locked." });
       }
 
@@ -188,9 +188,9 @@ export default function createChatRoutes(io) {
   // ─── POST /api/chat/:roomId/attachments — upload + send media/file message ─
   router.post("/:roomId/attachments", requireSubscription, attachmentUpload.single("file"), async (req, res) => {
     try {
-      // Reject if chat is locked after session expiry
+      // Reject if chat is locked: explicit flag OR link status is "ended"
       const roomLinkA = await StudentSoulteeLink.findOne({ _id: req.params.roomId }).lean();
-      if (roomLinkA?.chatLocked) {
+      if (roomLinkA?.chatLocked || roomLinkA?.status === "ended") {
         return res.status(403).json({ message: "Session has ended. Chat is locked." });
       }
 
