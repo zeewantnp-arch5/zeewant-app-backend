@@ -1,24 +1,25 @@
-import FollowUpCode from "../models/FollowUpCode.js";
+import FollowUpOtp from "../models/FollowUpCode.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 
 export async function runFollowUpExpiryJob(io) {
   try {
     const now = new Date();
-    const expired = await FollowUpCode.find({ status: "active", expiresAt: { $lte: now } }).lean();
+    // Find OTPs that were USED (follow-up active) and have now passed their 7-day window
+    const expired = await FollowUpOtp.find({ status: "USED", expiresAt: { $lte: now } }).lean();
 
-    for (const fu of expired) {
-      await FollowUpCode.updateOne({ _id: fu._id }, { status: "expired" });
-      await StudentSoulteeLink.updateOne({ _id: fu.roomId }, { chatLocked: true });
+    for (const record of expired) {
+      await FollowUpOtp.updateOne({ _id: record._id }, { status: "EXPIRED" });
+      await StudentSoulteeLink.updateOne({ _id: record.roomId }, { chatLocked: true });
 
       if (io) {
-        io.to(fu.roomId).emit("followup_expired",  { roomId: fu.roomId });
-        io.to(fu.roomId).emit("chat_relocked",      { roomId: fu.roomId });
+        io.to(record.roomId).emit("followup_expired",  { roomId: record.roomId });
+        io.to(record.roomId).emit("chat_relocked",      { roomId: record.roomId });
       }
-      console.log(`[followUpExpiry] Code ${fu.code} expired → room ${fu.roomId} relocked`);
+      console.log(`[followUpExpiry] OTP ${record.otp} expired → room ${record.roomId} relocked`);
     }
 
     if (expired.length > 0) {
-      console.log(`[followUpExpiry] Expired ${expired.length} follow-up code(s)`);
+      console.log(`[followUpExpiry] Expired ${expired.length} follow-up OTP(s)`);
     }
   } catch (err) {
     console.error("[followUpExpiry] Job error:", err.message);
