@@ -16,8 +16,10 @@ const followUpOtpSchema = new mongoose.Schema(
     // Duration mirrors the original paid session (e.g. 10, 20, 30, 60 minutes)
     durationMinutes: { type: Number, default: 60 },
 
-    activatedAt: { type: Date, default: null },
-    expiresAt:   { type: Date, default: null }, // activatedAt + durationMinutes
+    attempts:     { type: Number, default: 0 },
+    otpExpiresAt: { type: Date, default: null }, // OTP itself expires in 10 min
+    activatedAt:  { type: Date, default: null },
+    expiresAt:    { type: Date, default: null }, // activatedAt + durationMinutes
   },
   { timestamps: true }
 );

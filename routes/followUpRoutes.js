@@ -1,9 +1,17 @@
+import crypto from "crypto";
 import express from "express";
 import FollowUpOtp from "../models/FollowUpCode.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import Session from "../models/Session.js";
-import admin, { storeOTP, verifyOTP } from "../config/firebase.js";
+import admin from "../config/firebase.js";
 import { sendFollowUpOtpEmail } from "../services/emailService.js";
+
+const OTP_TTL_MS      = 10 * 60 * 1000; // OTP valid for 10 minutes
+const MAX_OTP_ATTEMPTS = 5;
+
+function generateOtp() {
+  return String(crypto.randomInt(100000, 999999));
+}
 
 const RESEND_THROTTLE = 30 * 1000; // 30 s minimum between resend requests
 
@@ -166,15 +174,17 @@ export default function createFollowUpRoutes(io) {
       }).sort({ createdAt: -1 }).lean();
       const durationMinutes = session?.durationMinutes ?? 60;
 
-      // Firebase generates, stores, and returns a 6-digit OTP (5-min TTL)
-      const otp = await storeOTP(resolvedStudentUid);
+      // Generate OTP and compute its expiry
+      const otp          = generateOtp();
+      const otpExpiresAt = new Date(Date.now() + OTP_TTL_MS);
 
-      // Store session metadata in MongoDB (no OTP validation logic — Firebase owns that)
+      // Store OTP + metadata in MongoDB — MongoDB is the sole source of truth
       await FollowUpOtp.create({
-        otp:                otp, // kept for audit trail only
+        otp,
         roomId,
         sessionId:          session?._id ?? null,
         durationMinutes,
+        otpExpiresAt,
         studentFirebaseUid: link.studentFirebaseUid,
         soulteeFirebaseUid: link.soulteeFirebaseUid,
       });
@@ -213,14 +223,36 @@ export default function createFollowUpRoutes(io) {
       if (!studentUid || !otp)
         return res.status(400).json({ message: "studentUid and otp are required" });
 
-      // Firebase RTDB validates: TTL, attempt count, code match
-      const { valid, reason } = await verifyOTP(studentUid, String(otp).trim());
-      if (!valid) return res.status(400).json({ message: reason ?? "Invalid or expired code" });
+      const enteredOtp = String(otp).trim();
 
-      // Find the MongoDB metadata record
+      // Find the active OTP record for this room in MongoDB
       const record = await FollowUpOtp.findOne({ roomId, status: "ACTIVE" });
       if (!record)
-        return res.status(404).json({ message: "Session metadata not found. Please request a new code." });
+        return res.status(404).json({ message: "No active code found. Please request a new one." });
+
+      // Check OTP expiry
+      if (record.otpExpiresAt && new Date() > record.otpExpiresAt) {
+        await FollowUpOtp.updateOne({ _id: record._id }, { status: "EXPIRED" });
+        return res.status(400).json({ message: "Code has expired. Please request a new one." });
+      }
+
+      // Track attempts
+      const attempts = (record.attempts ?? 0) + 1;
+      if (attempts > MAX_OTP_ATTEMPTS) {
+        await FollowUpOtp.updateOne({ _id: record._id }, { status: "EXPIRED" });
+        return res.status(400).json({ message: "Too many attempts. Please request a new code." });
+      }
+
+      // Validate the code
+      if (record.otp !== enteredOtp) {
+        await FollowUpOtp.updateOne({ _id: record._id }, { attempts });
+        const remaining = MAX_OTP_ATTEMPTS - attempts;
+        return res.status(400).json({
+          message: remaining > 0
+            ? `Incorrect code. ${remaining} attempt${remaining === 1 ? "" : "s"} remaining.`
+            : "Too many attempts. Please request a new code.",
+        });
+      }
 
       const durationMs  = record.durationMinutes * 60 * 1000;
       const activatedAt = new Date();
