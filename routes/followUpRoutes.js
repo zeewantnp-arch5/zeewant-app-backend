@@ -15,6 +15,36 @@ function generateOtp() {
 
 const RESEND_THROTTLE = 30 * 1000; // 30 s minimum between resend requests
 
+function normalizeEmail(value) {
+  if (typeof value !== "string") return null;
+  const email = value.trim();
+  return email ? email.toLowerCase() : null;
+}
+
+async function resolveStudentEmail(studentUid) {
+  // Prefer the profile email saved in Firestore users/{uid}.
+  if (admin.apps.length) {
+    try {
+      const userSnap = await admin.firestore().collection("users").doc(studentUid).get();
+      const userData = userSnap.data() || {};
+      const profileEmail =
+        normalizeEmail(userData.email) ||
+        normalizeEmail(userData.userEmail) ||
+        normalizeEmail(userData.contactEmail);
+      if (profileEmail) return profileEmail;
+    } catch {
+      // Fall back to Firebase Auth email lookup below.
+    }
+  }
+
+  try {
+    const userRecord = await admin.auth().getUser(studentUid);
+    return normalizeEmail(userRecord.email);
+  } catch {
+    return null;
+  }
+}
+
 export default function createFollowUpRoutes(io) {
   const router = express.Router();
 
@@ -189,14 +219,8 @@ export default function createFollowUpRoutes(io) {
         soulteeFirebaseUid: link.soulteeFirebaseUid,
       });
 
-      // Get student email from Firebase Auth
-      let studentEmail;
-      try {
-        const userRecord = await admin.auth().getUser(resolvedStudentUid);
-        studentEmail = userRecord.email;
-      } catch {
-        return res.status(400).json({ message: "Could not retrieve student account details" });
-      }
+      // Resolve student email from profile first, then Firebase Auth fallback.
+      const studentEmail = await resolveStudentEmail(resolvedStudentUid);
       if (!studentEmail)
         return res.status(400).json({ message: "No email address registered for this account" });
 
