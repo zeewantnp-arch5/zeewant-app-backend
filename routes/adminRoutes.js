@@ -2199,35 +2199,44 @@ router.patch(
         .lean();
       if (!soultee) return res.status(404).json({ message: "Soultee not found" });
 
-      // Mark completed sessions as adminPaid for audit tracking
-      // (wallet already auto-credited when each session completed)
+      // Find all completed sessions not yet paid by admin
       const unpaidSessions = await Session.find({
         soulteeFirebaseUid: soulteeUid,
         status: "completed",
         adminPaid: { $ne: true },
       }).lean();
 
+      const totalToCredit = unpaidSessions.reduce((sum, s) => sum + (s.soulteeEarnings || 0), 0);
+
       if (unpaidSessions.length > 0) {
+        // Mark sessions as paid
         await Session.updateMany(
           { _id: { $in: unpaidSessions.map((s) => s._id) } },
           { adminPaid: true, adminPaidAt: new Date() }
         );
+        // Credit soultee wallet — only happens here, never on session completion
+        await SessionWallet.findOneAndUpdate(
+          { soulteeFirebaseUid: soulteeUid },
+          { $inc: { totalEarned: totalToCredit } },
+          { upsert: true }
+        );
       }
-
-      const totalAmount = unpaidSessions.reduce((sum, s) => sum + (s.soulteeEarnings || 0), 0);
 
       const io = req.app.get("io");
       if (io) {
+        io.to(`soultee:${soulteeUid}`).emit("stats:updated");
         await notifyApplicant(io, {
           recipientUid: soulteeUid,
           recipientRole: "soultee",
           type: "billing_payment_success",
-          title: "Payment Confirmed",
-          body: "Admin has confirmed your session earnings payment.",
+          title: "Payment Received",
+          body: totalToCredit > 0
+            ? `NPR ${totalToCredit.toFixed(0)} has been credited to your wallet.`
+            : "Your payment has been confirmed by admin.",
           data: {
             type: "billing_payment_success",
             soulteeUid,
-            amount: totalAmount,
+            amount: totalToCredit,
             screen: "notifications",
           },
         });
@@ -2238,15 +2247,15 @@ router.patch(
         resourceType: "soultee",
         resourceId: soulteeUid,
         resourceName: soultee.name || soulteeUid,
-        description: `Admin confirmed payment for soultee ${soultee.name || soulteeUid} — ${unpaidSessions.length} session(s), NPR ${totalAmount.toFixed(0)}`,
+        description: `Admin paid soultee ${soultee.name || soulteeUid} — ${unpaidSessions.length} session(s), NPR ${totalToCredit.toFixed(0)}`,
         severity: "info",
       });
 
       res.json({
         success: true,
-        message: "Payment confirmed and sessions marked as paid.",
+        message: "Payment confirmed and wallet credited.",
         sessionsPaid: unpaidSessions.length,
-        totalAmount,
+        amountCredited: totalToCredit,
       });
     } catch (err) {
       res.status(500).json({ message: err.message });
