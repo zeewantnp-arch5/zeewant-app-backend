@@ -336,15 +336,17 @@ router.post("/forgot-password", async (req, res) => {
       message: "A 6-digit reset code has been sent to your email. Check your inbox.",
     });
   } catch (error) {
-    console.error("[Admin Reset] Error:", error.message);
-    // Surface email config errors clearly; hide other internals
-    const isMailError = error.message.includes("MAIL_USER") ||
-                        error.message.includes("MAIL_PASS") ||
-                        error.message.includes("Email not configured");
+    console.error("[Admin Reset] Error:", error.message, error.code ?? "");
+    const isMailConfig = error.message.includes("MAIL_USER") ||
+                         error.message.includes("MAIL_PASS") ||
+                         error.message.includes("Email not configured");
+    const isAuthError  = error.code === "EAUTH" || error.message.toLowerCase().includes("invalid login");
     res.status(500).json({
-      message: isMailError
+      message: isMailConfig
         ? "Email service not configured. Contact your system administrator."
-        : "Failed to send reset code. Please try again.",
+        : isAuthError
+          ? "Email authentication failed. Check MAIL_USER and MAIL_PASS in server config."
+          : "Failed to send reset code. Please try again.",
     });
   }
 });
