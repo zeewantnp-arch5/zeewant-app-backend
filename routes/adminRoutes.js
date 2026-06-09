@@ -376,16 +376,9 @@ router.post("/forgot-password", async (req, res) => {
     });
   } catch (error) {
     console.error("[Admin Reset] Error:", error.message, error.code ?? "");
-    const isMailConfig = error.message.includes("MAIL_USER") ||
-                         error.message.includes("MAIL_PASS") ||
-                         error.message.includes("Email not configured");
-    const isAuthError  = error.code === "EAUTH" || error.message.toLowerCase().includes("invalid login");
+    // Return the real error so we can diagnose — remove after fixing
     res.status(500).json({
-      message: isMailConfig
-        ? "Email service not configured. Contact your system administrator."
-        : isAuthError
-          ? "Email authentication failed. Check MAIL_USER and MAIL_PASS in server config."
-          : "Failed to send reset code. Please try again.",
+      message: `[DEBUG] ${error.code ?? "ERR"}: ${error.message}`,
     });
   }
 });
