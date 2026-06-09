@@ -1,19 +1,30 @@
 import nodemailer from "nodemailer";
 
-export async function sendFollowUpOtpEmail(toEmail, code, durationMinutes) {
-  const user = process.env.MAIL_USER;
-  const pass = process.env.MAIL_PASS;
-  if (!user || !pass) throw new Error("Email not configured. Set MAIL_USER and MAIL_PASS in .env");
+function createTransporter() {
+  const host     = process.env.SMTP_HOST     || "smtp.gmail.com";
+  const port     = Number(process.env.SMTP_PORT || 587);
+  const user     = process.env.SMTP_USERNAME  || process.env.MAIL_USER;
+  const pass     = process.env.SMTP_PASSWORD  || process.env.MAIL_PASS;
 
-  const transporter = nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    auth: { user, pass },
-  });
+  if (!user || !pass)
+    throw new Error("Email not configured. Set SMTP_USERNAME and SMTP_PASSWORD in environment variables.");
+
+  return {
+    transporter: nodemailer.createTransport({
+      host,
+      port,
+      secure: port === 465,
+      auth: { user, pass },
+    }),
+    from: process.env.SMTP_FROM_ADDRESS || user,
+  };
+}
+
+export async function sendFollowUpOtpEmail(toEmail, code, durationMinutes) {
+  const { transporter, from } = createTransporter();
 
   await transporter.sendMail({
-    from: `"Zeewant" <${user}>`,
+    from: `"Zeewant" <${from}>`,
     to: toEmail,
     subject: "Zeewant — Follow-Up Session Access Code",
     text: `Your follow-up access code is: ${code}\n\nThis code expires in 10 minutes.\nYour follow-up session duration: ${durationMinutes} minutes.`,
@@ -46,33 +57,11 @@ export async function sendFollowUpOtpEmail(toEmail, code, durationMinutes) {
   });
 }
 
-/**
- * Send the password-reset OTP to an admin's email.
- *
- * Requires env vars:
- *   MAIL_USER  — Gmail address used as sender  (e.g. yourapp@gmail.com)
- *   MAIL_PASS  — Gmail App Password (not the account password)
- *               Generate at: myaccount.google.com → Security → App passwords
- */
 export async function sendResetCodeEmail(toEmail, code) {
-  const user = process.env.MAIL_USER;
-  const pass = process.env.MAIL_PASS;
-
-  if (!user || !pass) {
-    throw new Error(
-      "Email not configured. Set MAIL_USER and MAIL_PASS in .env"
-    );
-  }
-
-  const transporter = nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    auth: { user, pass },
-  });
+  const { transporter, from } = createTransporter();
 
   await transporter.sendMail({
-    from: `"Zeewant Admin" <${user}>`,
+    from: `"Zeewant Admin" <${from}>`,
     to: toEmail,
     subject: "Zeewant Admin Panel — Password Reset Code",
     text: `Your password reset code is: ${code}\n\nThis code expires in 15 minutes. Do not share it with anyone.`,
