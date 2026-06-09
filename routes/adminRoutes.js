@@ -302,6 +302,20 @@ router.post("/register", async (req, res) => {
   }
 });
 
+// ─── GET /api/admin/check-mail-config ────────────────────────────────────────
+// Temporary diagnostic — remove after confirming Render env vars are set
+router.get("/check-mail-config", (_req, res) => {
+  const user = process.env.MAIL_USER;
+  const pass = process.env.MAIL_PASS;
+  res.json({
+    MAIL_USER_SET: !!user,
+    MAIL_USER_VALUE: user ?? "NOT SET",
+    MAIL_PASS_SET: !!pass,
+    MAIL_PASS_LENGTH: pass?.length ?? 0,
+    MAIL_PASS_HAS_SPACES: pass?.includes(" ") ?? false,
+  });
+});
+
 // ─── POST /api/admin/forgot-password ─────────────────────────────────────────
 // Generates a 6-digit OTP, saves it, and emails it to the admin's Gmail.
 // The code is NOT returned in the response to prevent enumeration.
