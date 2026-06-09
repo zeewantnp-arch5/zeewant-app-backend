@@ -5,7 +5,12 @@ export async function sendFollowUpOtpEmail(toEmail, code, durationMinutes) {
   const pass = process.env.MAIL_PASS;
   if (!user || !pass) throw new Error("Email not configured. Set MAIL_USER and MAIL_PASS in .env");
 
-  const transporter = nodemailer.createTransport({ service: "gmail", auth: { user, pass } });
+  const transporter = nodemailer.createTransport({
+    host: "smtp.gmail.com",
+    port: 465,
+    secure: true,
+    auth: { user, pass },
+  });
 
   await transporter.sendMail({
     from: `"Zeewant" <${user}>`,
@@ -60,7 +65,9 @@ export async function sendResetCodeEmail(toEmail, code) {
   }
 
   const transporter = nodemailer.createTransport({
-    service: "gmail",
+    host: "smtp.gmail.com",
+    port: 465,
+    secure: true,
     auth: { user, pass },
   });
 
