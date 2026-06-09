@@ -303,17 +303,42 @@ router.post("/register", async (req, res) => {
 });
 
 // ─── GET /api/admin/check-mail-config ────────────────────────────────────────
-// Temporary diagnostic — remove after confirming Render env vars are set
 router.get("/check-mail-config", (_req, res) => {
-  const user = process.env.MAIL_USER;
-  const pass = process.env.MAIL_PASS;
+  const smtpUser = process.env.SMTP_USERNAME;
+  const smtpPass = process.env.SMTP_PASSWORD;
+  const mailUser = process.env.MAIL_USER;
+  const mailPass = process.env.MAIL_PASS;
   res.json({
-    MAIL_USER_SET: !!user,
-    MAIL_USER_VALUE: user ?? "NOT SET",
-    MAIL_PASS_SET: !!pass,
-    MAIL_PASS_LENGTH: pass?.length ?? 0,
-    MAIL_PASS_HAS_SPACES: pass?.includes(" ") ?? false,
+    SMTP_USERNAME_SET: !!smtpUser,
+    SMTP_USERNAME_VALUE: smtpUser ?? "NOT SET",
+    SMTP_PASSWORD_SET: !!smtpPass,
+    SMTP_PASSWORD_LENGTH: smtpPass?.length ?? 0,
+    SMTP_PASSWORD_HAS_SPACES: smtpPass?.includes(" ") ?? false,
+    SMTP_HOST: process.env.SMTP_HOST ?? "NOT SET",
+    SMTP_PORT: process.env.SMTP_PORT ?? "NOT SET",
+    MAIL_USER_SET: !!mailUser,
+    MAIL_PASS_SET: !!mailPass,
+    MAIL_PASS_LENGTH: mailPass?.length ?? 0,
   });
+});
+
+// ─── GET /api/admin/test-email ────────────────────────────────────────────────
+router.get("/test-email", async (_req, res) => {
+  try {
+    const nodemailer = await import("nodemailer");
+    const host = process.env.SMTP_HOST     || "smtp.gmail.com";
+    const port = Number(process.env.SMTP_PORT || 587);
+    const user = process.env.SMTP_USERNAME  || process.env.MAIL_USER;
+    const pass = process.env.SMTP_PASSWORD  || process.env.MAIL_PASS;
+
+    if (!user || !pass) return res.status(500).json({ error: "No credentials set" });
+
+    const t = nodemailer.default.createTransport({ host, port, secure: port === 465, auth: { user, pass } });
+    await t.verify();
+    res.json({ ok: true, message: "SMTP verified successfully", host, port, user });
+  } catch (err) {
+    res.status(500).json({ ok: false, code: err.code, message: err.message });
+  }
 });
 
 // ─── POST /api/admin/forgot-password ─────────────────────────────────────────
