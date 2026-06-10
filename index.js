@@ -1,7 +1,7 @@
+import "dotenv/config";
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
-import dotenv from "dotenv";
 import cors from "cors";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
@@ -42,8 +42,6 @@ import createFollowUpRoutes from "./routes/followUpRoutes.js";
 import { runFollowUpExpiryJob } from "./services/followUpExpiryService.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-
-dotenv.config();
 
 const app = express();
 const httpServer = createServer(app);
