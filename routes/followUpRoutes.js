@@ -302,7 +302,7 @@ export default function createFollowUpRoutes(io) {
         ).catch(() => {});
       }
 
-      await FollowUpOtp.create({
+      const otpRecord = await FollowUpOtp.create({
         otp,
         roomId,
         sessionId:          session?._id ?? null,
@@ -314,15 +314,27 @@ export default function createFollowUpRoutes(io) {
         verificationMethod: "email",
       });
 
-      await sendFollowUpOtpEmail(resolvedStudentEmail, otp, durationMinutes);
+      console.log(`[followUp] OTP generated for room ${roomId} → ${otp} (to: ${resolvedStudentEmail})`);
 
-      io.to(`student:${resolvedStudentUid}`).emit("otp_sent", { roomId, method: "email" });
-
+      // Respond immediately so the app is not blocked by SMTP latency
       res.json({
         success: true,
         message: "Verification code sent to your email",
         sentTo:  resolvedStudentEmail,
         method:  "email",
+      });
+
+      io.to(`student:${resolvedStudentUid}`).emit("otp_sent", { roomId, method: "email" });
+
+      // Send email in the background — if it fails, roll back the OTP record
+      setImmediate(async () => {
+        try {
+          await sendFollowUpOtpEmail(resolvedStudentEmail, otp, durationMinutes);
+          console.log(`[followUp] OTP email sent to ${resolvedStudentEmail} — room ${roomId}`);
+        } catch (mailErr) {
+          console.error(`[followUp] email failed for room ${roomId}:`, mailErr.message);
+          await FollowUpOtp.updateOne({ _id: otpRecord._id }, { status: "EXPIRED" }).catch(() => {});
+        }
       });
     } catch (err) {
       console.error("[followUp] request-otp error:", err.message);
