@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
+import mongoose from "mongoose";
 import cors from "cors";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
@@ -45,6 +46,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 const httpServer = createServer(app);
+let isAppReady = false;
 
 // ─── Socket.io ────────────────────────────────────────────────────────────────
 const io = new Server(httpServer, {
@@ -63,6 +65,15 @@ registerSupportNamespace(io);
 // ─── Express middleware ───────────────────────────────────────────────────────
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
+
+// Return a fast, explicit response while DB/bootstrap tasks are still running.
+app.use("/api", (req, res, next) => {
+  if (isAppReady) return next();
+  res.status(503).json({
+    success: false,
+    message: "Server is warming up. Please retry shortly.",
+  });
+});
 
 // Log requests that take longer than 3 s so slow endpoints are visible in Render logs
 app.use((req, _res, next) => {
@@ -108,10 +119,13 @@ app.use("/uploads", express.static(join(__dirname, "uploads")));
 
 app.get("/", (req, res) => res.send("Zeewant Backend Running..."));
 app.get("/health", (_req, res) => {
-  import("mongoose").then(({ default: mongoose }) => {
-    const dbState = mongoose.connection.readyState;
-    res.json({ status: "ok", db: dbState === 1 ? "connected" : "degraded", ts: Date.now() });
-  }).catch(() => res.json({ status: "ok", db: "unknown", ts: Date.now() }));
+  const dbState = mongoose.connection.readyState;
+  res.json({
+    status: "ok",
+    ready: isAppReady,
+    db: dbState === 1 ? "connected" : "degraded",
+    ts: Date.now(),
+  });
 });
 
 // Debug endpoint — shows masked env vars so you can confirm Render picked them up
@@ -127,28 +141,9 @@ app.get("/debug/env", (_req, res) => {
 
 const PORT = process.env.PORT || 5000;
 
-async function startServer() {
-  await connectDB();
-  await SystemSettings.ensureDefaults();
-  await SubscriptionPlan.ensureDefaults();
-  await resetRealtimePresenceState();
-
-  // Run subscription expiry job immediately on startup, then every 6 hours
-  runSubscriptionExpiryJob();
-  setInterval(runSubscriptionExpiryJob, 6 * 60 * 60 * 1000);
-
-  // Feature subscription expiry + notifications: immediately, then every 12 hours
-  runFeatureExpiryJob();
-  setInterval(runFeatureExpiryJob, 12 * 60 * 60 * 1000);
-
-  // Follow-up OTP expiry: immediately on startup (catches missed expirations after
-  // a server restart — the per-activation setTimeout is lost on restart)
-  // then every 5 minutes
-  runFollowUpExpiryJob(io);
-  setInterval(() => runFollowUpExpiryJob(io), 5 * 60 * 1000);
-
+function startHttpServer() {
   httpServer.listen(PORT, "0.0.0.0", () => {
-    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`Server listening on port ${PORT} (bootstrap in progress)`);
 
     // Render free tier sleeps after 15 min of inactivity.
     // Ping own external URL every 14 min to stay awake.
@@ -165,7 +160,31 @@ async function startServer() {
   });
 }
 
-startServer().catch((error) => {
-  console.error("Server startup failed:", error.message);
-  process.exit(1);
+async function bootstrapApp() {
+  await connectDB();
+  await SystemSettings.ensureDefaults();
+  await SubscriptionPlan.ensureDefaults();
+  await resetRealtimePresenceState();
+  isAppReady = true;
+
+  // Run subscription expiry job immediately on startup, then every 6 hours
+  runSubscriptionExpiryJob();
+  setInterval(runSubscriptionExpiryJob, 6 * 60 * 60 * 1000);
+
+  // Feature subscription expiry + notifications: immediately, then every 12 hours
+  runFeatureExpiryJob();
+  setInterval(runFeatureExpiryJob, 12 * 60 * 60 * 1000);
+
+  // Follow-up OTP expiry: immediately on startup (catches missed expirations after
+  // a server restart — the per-activation setTimeout is lost on restart)
+  // then every 5 minutes
+  runFollowUpExpiryJob(io);
+  setInterval(() => runFollowUpExpiryJob(io), 5 * 60 * 1000);
+
+  console.log("Application bootstrap completed.");
+}
+
+startHttpServer();
+bootstrapApp().catch((error) => {
+  console.error("Bootstrap failed:", error.message);
 });
