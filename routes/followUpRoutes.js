@@ -4,6 +4,8 @@ import FollowUpOtp from "../models/FollowUpCode.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import Session from "../models/Session.js";
 import { sendFollowUpOtpEmail } from "../services/emailService.js";
+import admin from "../config/firebase.js";
+import PhoneAuth from "../models/PhoneAuth.js";
 
 const OTP_TTL_MS      = 10 * 60 * 1000; // OTP valid for 10 minutes
 const MAX_OTP_ATTEMPTS = 5;
@@ -26,6 +28,23 @@ async function resolveStudentEmail(studentUid) {
     .select("studentEmail")
     .lean();
   return normalizeEmail(recentOtp?.studentEmail);
+}
+
+async function resolveStudentPhone(studentUid) {
+  try {
+    const user = await admin.auth().getUser(studentUid);
+    if (user.phoneNumber) return user.phoneNumber;
+  } catch (_) {}
+  try {
+    const phoneAuth = await PhoneAuth.findOne({ firebaseUid: studentUid }).lean();
+    if (phoneAuth?.phone) return phoneAuth.phone;
+  } catch (_) {}
+  return null;
+}
+
+function maskPhone(phone) {
+  if (!phone || phone.length <= 4) return phone || "";
+  return phone.slice(0, -4) + "****";
 }
 
 export default function createFollowUpRoutes(io) {
@@ -129,12 +148,12 @@ export default function createFollowUpRoutes(io) {
   });
 
   // ─── POST /api/follow-up/:roomId/request-otp ───────────────────────────────
-  // Student OR soultee-initiated. Firebase generates + stores the OTP (5-min TTL).
-  // Nodemailer delivers it to the student's registered email.
   router.post("/:roomId/request-otp", async (req, res) => {
     try {
       const { studentUid, soulteeUid, studentEmail, email, userEmail, contactEmail } = req.body;
       const { roomId } = req.params;
+      // 'mobile' only accepted for student-initiated requests (soultee always uses email)
+      const method = (req.body.method === "mobile" && studentUid) ? "mobile" : "email";
 
       if (!studentUid && !soulteeUid)
         return res.status(400).json({ message: "studentUid or soulteeUid is required" });
@@ -142,16 +161,13 @@ export default function createFollowUpRoutes(io) {
       const link = await StudentSoulteeLink.findOne({ _id: roomId }).lean();
       if (!link) return res.status(404).json({ message: "Room not found" });
 
-      // Verify caller identity: student calling for themselves, or soultee for their student
       if (studentUid && link.studentFirebaseUid !== studentUid)
         return res.status(403).json({ message: "Not authorized" });
       if (soulteeUid && link.soulteeFirebaseUid !== soulteeUid)
         return res.status(403).json({ message: "Not authorized" });
 
-      // Always send OTP to the student regardless of who initiated
       const resolvedStudentUid = link.studentFirebaseUid;
 
-      // Verify the session is locked / completed
       const isLocked = link.chatLocked === true || link.status === "ended";
       if (!isLocked) {
         const sess = await Session.findOne({
@@ -162,12 +178,11 @@ export default function createFollowUpRoutes(io) {
         if (!sess) return res.status(400).json({ message: "Session is still active" });
       }
 
-      // Refuse if a follow-up is already running
       const activeFollowUp = await FollowUpOtp.exists({ roomId, status: "USED" });
       if (activeFollowUp)
         return res.status(409).json({ message: "A follow-up session is already active" });
 
-      // Resend throttle: check MongoDB record createdAt
+      // Resend throttle
       const existingMeta = await FollowUpOtp.findOne({ roomId, status: "ACTIVE" }).lean();
       if (existingMeta) {
         const age = Date.now() - new Date(existingMeta.createdAt).getTime();
@@ -175,11 +190,9 @@ export default function createFollowUpRoutes(io) {
           const remainingSeconds = Math.ceil((RESEND_THROTTLE - age) / 1000);
           return res.status(429).json({ message: `Please wait ${remainingSeconds}s before resending`, remainingSeconds });
         }
-        // Expire the old metadata record; Firebase will overwrite its OTP entry
         await FollowUpOtp.updateOne({ _id: existingMeta._id }, { status: "EXPIRED" });
       }
 
-      // Get session duration
       const session = await Session.findOne({
         soulteeFirebaseUid: link.soulteeFirebaseUid,
         studentFirebaseUid: link.studentFirebaseUid,
@@ -187,7 +200,43 @@ export default function createFollowUpRoutes(io) {
       }).sort({ createdAt: -1 }).lean();
       const durationMinutes = session?.durationMinutes ?? 60;
 
-      // Generate OTP and compute its expiry
+      // ── Mobile flow ─────────────────────────────────────────────────────────
+      if (method === "mobile") {
+        const studentPhone = await resolveStudentPhone(resolvedStudentUid);
+        if (!studentPhone) {
+          return res.status(400).json({
+            message: "No phone number found in your profile. Please use email verification.",
+          });
+        }
+
+        // Placeholder OTP — never validated; Firebase handles the actual SMS code
+        const mobilePlaceholder = "__m_" + crypto.randomBytes(16).toString("hex");
+        const otpExpiresAt = new Date(Date.now() + OTP_TTL_MS);
+
+        await FollowUpOtp.create({
+          otp:                mobilePlaceholder,
+          roomId,
+          sessionId:          session?._id ?? null,
+          durationMinutes,
+          otpExpiresAt,
+          studentPhone,
+          studentFirebaseUid: link.studentFirebaseUid,
+          soulteeFirebaseUid: link.soulteeFirebaseUid,
+          verificationMethod: "mobile",
+        });
+
+        io.to(`student:${resolvedStudentUid}`).emit("otp_sent", { roomId, method: "mobile" });
+
+        return res.json({
+          success: true,
+          message: "Please verify your mobile number",
+          sentTo:  maskPhone(studentPhone),
+          phone:   studentPhone,
+          method:  "mobile",
+        });
+      }
+
+      // ── Email flow ──────────────────────────────────────────────────────────
       const otp          = generateOtp();
       const otpExpiresAt = new Date(Date.now() + OTP_TTL_MS);
 
@@ -196,17 +245,16 @@ export default function createFollowUpRoutes(io) {
         normalizeEmail(email) ||
         normalizeEmail(userEmail) ||
         normalizeEmail(contactEmail);
-      const emailFromLink = normalizeEmail(link.studentEmail);
+      const emailFromLink    = normalizeEmail(link.studentEmail);
       const emailFromHistory = await resolveStudentEmail(resolvedStudentUid);
       const resolvedStudentEmail = emailFromBody || emailFromLink || emailFromHistory;
 
       if (!resolvedStudentEmail) {
         return res.status(400).json({
-          message: "No email address found in MongoDB profile. Please update student email first.",
+          message: "No email address found in profile. Please update student email first.",
         });
       }
 
-      // Keep studentEmail in link for all future OTP sends (Firebase-independent).
       if (resolvedStudentEmail !== emailFromLink) {
         await StudentSoulteeLink.updateOne(
           { _id: roomId },
@@ -214,7 +262,6 @@ export default function createFollowUpRoutes(io) {
         ).catch(() => {});
       }
 
-      // Store OTP + metadata in MongoDB — MongoDB is the sole source of truth
       await FollowUpOtp.create({
         otp,
         roomId,
@@ -224,17 +271,18 @@ export default function createFollowUpRoutes(io) {
         studentEmail:       resolvedStudentEmail,
         studentFirebaseUid: link.studentFirebaseUid,
         soulteeFirebaseUid: link.soulteeFirebaseUid,
+        verificationMethod: "email",
       });
 
-      // Send OTP via nodemailer
       await sendFollowUpOtpEmail(resolvedStudentEmail, otp, durationMinutes);
 
-      io.to(`student:${resolvedStudentUid}`).emit("otp_sent", { roomId });
+      io.to(`student:${resolvedStudentUid}`).emit("otp_sent", { roomId, method: "email" });
 
       res.json({
         success: true,
         message: "Verification code sent to your email",
-        sentTo: resolvedStudentEmail,
+        sentTo:  resolvedStudentEmail,
+        method:  "email",
       });
     } catch (err) {
       console.error("[followUp] request-otp error:", err.message);
@@ -243,45 +291,62 @@ export default function createFollowUpRoutes(io) {
   });
 
   // ─── POST /api/follow-up/:roomId/verify-otp ────────────────────────────────
-  // Firebase validates the OTP (TTL + attempt-count). On success, follow-up
-  // session starts for the original session's duration.
   router.post("/:roomId/verify-otp", async (req, res) => {
     try {
-      const { studentUid, otp } = req.body;
+      const { studentUid, otp, firebaseIdToken } = req.body;
       const { roomId } = req.params;
 
-      if (!studentUid || !otp)
-        return res.status(400).json({ message: "studentUid and otp are required" });
+      if (!studentUid)
+        return res.status(400).json({ message: "studentUid is required" });
 
-      const enteredOtp = String(otp).trim();
-
-      // Find the active OTP record for this room in MongoDB
       const record = await FollowUpOtp.findOne({ roomId, status: "ACTIVE" });
       if (!record)
         return res.status(404).json({ message: "No active code found. Please request a new one." });
 
-      // Check OTP expiry
       if (record.otpExpiresAt && new Date() > record.otpExpiresAt) {
         await FollowUpOtp.updateOne({ _id: record._id }, { status: "EXPIRED" });
         return res.status(400).json({ message: "Code has expired. Please request a new one." });
       }
 
-      // Track attempts
-      const attempts = (record.attempts ?? 0) + 1;
-      if (attempts > MAX_OTP_ATTEMPTS) {
-        await FollowUpOtp.updateOne({ _id: record._id }, { status: "EXPIRED" });
-        return res.status(400).json({ message: "Too many attempts. Please request a new code." });
-      }
+      // ── Mobile: verify Firebase ID token ────────────────────────────────────
+      if (record.verificationMethod === "mobile") {
+        if (!firebaseIdToken)
+          return res.status(400).json({ message: "Firebase ID token required for mobile verification." });
 
-      // Validate the code
-      if (record.otp !== enteredOtp) {
-        await FollowUpOtp.updateOne({ _id: record._id }, { attempts });
-        const remaining = MAX_OTP_ATTEMPTS - attempts;
-        return res.status(400).json({
-          message: remaining > 0
-            ? `Incorrect code. ${remaining} attempt${remaining === 1 ? "" : "s"} remaining.`
-            : "Too many attempts. Please request a new code.",
-        });
+        let decoded;
+        try {
+          decoded = await admin.auth().verifyIdToken(firebaseIdToken);
+        } catch {
+          return res.status(400).json({ message: "Invalid or expired verification token. Please try again." });
+        }
+
+        if (!decoded.phone_number)
+          return res.status(400).json({ message: "Phone number not found in verification token." });
+
+        if (decoded.phone_number !== record.studentPhone)
+          return res.status(400).json({ message: "Phone number does not match the registered number." });
+      } else {
+        // ── Email: validate 6-digit code ─────────────────────────────────────
+        if (!otp)
+          return res.status(400).json({ message: "otp is required" });
+
+        const enteredOtp = String(otp).trim();
+        const attempts   = (record.attempts ?? 0) + 1;
+
+        if (attempts > MAX_OTP_ATTEMPTS) {
+          await FollowUpOtp.updateOne({ _id: record._id }, { status: "EXPIRED" });
+          return res.status(400).json({ message: "Too many attempts. Please request a new code." });
+        }
+
+        if (record.otp !== enteredOtp) {
+          await FollowUpOtp.updateOne({ _id: record._id }, { attempts });
+          const remaining = MAX_OTP_ATTEMPTS - attempts;
+          return res.status(400).json({
+            message: remaining > 0
+              ? `Incorrect code. ${remaining} attempt${remaining === 1 ? "" : "s"} remaining.`
+              : "Too many attempts. Please request a new code.",
+          });
+        }
       }
 
       const durationMs  = record.durationMinutes * 60 * 1000;
