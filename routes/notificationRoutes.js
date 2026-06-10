@@ -22,7 +22,9 @@ router.post("/register-token", async (req, res) => {
     const fcmToken = await registerFCMToken(userUid, token);
     res.json({ message: "Token registered", token: fcmToken });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error("[FCM] register-token failed:", err.message);
+    // Non-fatal — app works without push notifications
+    res.status(200).json({ message: "Token registration skipped", error: err.message });
   }
 });
 

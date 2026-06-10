@@ -342,6 +342,41 @@ export default function createFollowUpRoutes(io) {
     }
   });
 
+  // ─── PATCH /api/follow-up/:roomId/end ──────────────────────────────────────
+  // Soultee can end the follow-up session early
+  router.patch("/:roomId/end", async (req, res) => {
+    try {
+      const { soulteeUid } = req.body;
+      const { roomId } = req.params;
+
+      if (!soulteeUid)
+        return res.status(400).json({ message: "soulteeUid is required" });
+
+      const link = await StudentSoulteeLink.findOne({ _id: roomId }).lean();
+      if (!link) return res.status(404).json({ message: "Room not found" });
+      if (link.soulteeFirebaseUid !== soulteeUid)
+        return res.status(403).json({ message: "Not authorized" });
+
+      const record = await FollowUpOtp.findOne({ roomId, status: "USED" });
+      if (!record)
+        return res.status(404).json({ message: "No active follow-up session found" });
+
+      record.status = "EXPIRED";
+      await record.save();
+
+      await StudentSoulteeLink.updateOne({ _id: roomId }, { chatLocked: true });
+
+      io.to(roomId).emit("followup_expired", { roomId });
+      io.to(roomId).emit("chat_relocked",    { roomId });
+
+      console.log(`[followUp] Soultee ended follow-up early — room ${roomId}`);
+      res.json({ success: true });
+    } catch (err) {
+      console.error("[followUp] end error:", err.message);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // ─── POST /api/follow-up/:roomId/verify-otp ────────────────────────────────
   router.post("/:roomId/verify-otp", async (req, res) => {
     try {

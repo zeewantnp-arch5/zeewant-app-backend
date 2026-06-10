@@ -108,25 +108,30 @@ export async function sendBulkPushNotifications(userUids, notification) {
  * @returns {Promise<Object>} - Token record
  */
 export async function registerFCMToken(userUid, token) {
+  if (!userUid || !token) {
+    throw new Error("userUid and token are required");
+  }
   try {
-    if (!userUid || !token) {
-      throw new Error("userUid and token are required");
-    }
-
-    const fcmToken = await FCMToken.findOneAndUpdate(
+    return await FCMToken.findOneAndUpdate(
       { userUid, token },
-      {
-        userUid,
-        token,
-        isActive: true,
-        registeredAt: new Date(),
-        lastUsedAt: new Date(),
-      },
+      { userUid, token, isActive: true, registeredAt: new Date(), lastUsedAt: new Date() },
       { upsert: true, new: true }
     );
-
-    return fcmToken;
   } catch (err) {
+    // Stale unique index on the legacy 'uid' field causes E11000 when uid is absent.
+    // Fall back to a find-or-create pattern so token registration never blocks the app.
+    if (err.code === 11000) {
+      console.warn("[FCM] Stale uid_1 index conflict — dropping stale index and retrying");
+      try {
+        await FCMToken.collection.dropIndex("uid_1");
+        console.log("[FCM] Dropped stale uid_1 index");
+      } catch (_) { /* already gone */ }
+      return await FCMToken.findOneAndUpdate(
+        { userUid, token },
+        { userUid, token, isActive: true, registeredAt: new Date(), lastUsedAt: new Date() },
+        { upsert: true, new: true }
+      );
+    }
     console.error("Error registering FCM token:", err.message);
     throw err;
   }
