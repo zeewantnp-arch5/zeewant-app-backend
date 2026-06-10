@@ -147,6 +147,46 @@ export default function createFollowUpRoutes(io) {
     }
   });
 
+  // ─── GET /api/follow-up/:roomId/contact-info?studentUid=... ──────────────────
+  // Returns masked email + phone so the Flutter dialog can show available methods.
+  router.get("/:roomId/contact-info", async (req, res) => {
+    try {
+      const { roomId } = req.params;
+      const { studentUid } = req.query;
+      if (!studentUid) return res.status(400).json({ message: "studentUid is required" });
+
+      const link = await StudentSoulteeLink.findOne({ _id: roomId }).lean();
+      if (!link) return res.status(404).json({ message: "Room not found" });
+      if (link.studentFirebaseUid !== studentUid)
+        return res.status(403).json({ message: "Not authorized" });
+
+      // Resolve email
+      const emailFromLink    = normalizeEmail(link.studentEmail);
+      const emailFromHistory = await resolveStudentEmail(studentUid);
+      const resolvedEmail    = emailFromLink || emailFromHistory;
+
+      // Resolve phone (Firebase Auth → PhoneAuth model)
+      const resolvedPhone = await resolveStudentPhone(studentUid);
+
+      const maskEmail = (e) => {
+        if (!e) return null;
+        const [local, domain] = e.split("@");
+        if (!local || !domain) return e;
+        if (local.length <= 2) return `${"*".repeat(local.length)}@${domain}`;
+        return `${local[0]}${"*".repeat(local.length - 2)}${local[local.length - 1]}@${domain}`;
+      };
+
+      res.json({
+        email:       resolvedEmail   ? maskEmail(resolvedEmail)  : null,
+        phone:       resolvedPhone   ? maskPhone(resolvedPhone)  : null,
+        hasEmail:    !!resolvedEmail,
+        hasPhone:    !!resolvedPhone,
+      });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // ─── POST /api/follow-up/:roomId/request-otp ───────────────────────────────
   router.post("/:roomId/request-otp", async (req, res) => {
     try {
