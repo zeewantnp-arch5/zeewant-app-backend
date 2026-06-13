@@ -51,8 +51,8 @@ let isAppReady = false;
 // ─── Socket.io ────────────────────────────────────────────────────────────────
 const io = new Server(httpServer, {
   cors: { origin: "*", methods: ["GET", "POST"] },
-  // Render Pro — no cold start. Use tight ping values so dead connections are
-  // detected quickly and clients reconnect without a long wait.
+  // WebSocket-only — avoids polling→WS upgrade step that Render's proxy can drop.
+  transports: ["websocket"],
   pingTimeout: 20000,
   pingInterval: 10000,
   connectTimeout: 10000,
@@ -146,18 +146,7 @@ function startHttpServer() {
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Server listening on port ${PORT} (bootstrap in progress)`);
 
-    // Render free tier sleeps after 15 min of inactivity.
-    // Ping own external URL every 14 min to stay awake.
-    // RENDER_EXTERNAL_URL is auto-injected by Render; fall back to BACKEND_URL
-    // so the keep-alive works even if the env var name differs.
-    const selfUrl = process.env.RENDER_EXTERNAL_URL || process.env.BACKEND_URL;
-    if (selfUrl) {
-      setInterval(() => {
-        fetch(`${selfUrl}/health`)
-          .then(() => console.log("[keep-alive] ping ok"))
-          .catch((err) => console.warn("[keep-alive] ping failed:", err.message));
-      }, 14 * 60 * 1000);
-    }
+    // Render Pro — no cold start, keep-alive self-ping not needed.
   });
 }
 
