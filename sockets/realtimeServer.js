@@ -623,13 +623,19 @@ export function registerRealtimeServer(io) {
       const receiverRegistry = receiverRole === "student" ? studentSocketsByUid : soulteeSocketsByUid;
       const isReceiverOnline = isUserOnline(receiverRegistry, to);
       const normalizedCallType = isVideo ? "video" : "audio";
+      const resolvedCallerName = callerName || socket.data.userName || callerId;
+
+      console.log(
+        `📞 call_initiate: ${resolvedCallerName}(${callerId}) → ${to} ` +
+        `type=${normalizedCallType} receiverOnline=${isReceiverOnline}`
+      );
 
       try {
         const callEvent = await createCallEvent({
           roomId,
           callerId,
           callerRole,
-          callerName: callerName || socket.data.userName || callerId,
+          callerName: resolvedCallerName,
           receiverId: to,
           receiverRole,
           callType: normalizedCallType,
@@ -638,8 +644,32 @@ export function registerRealtimeServer(io) {
         });
 
         if (!isReceiverOnline) {
-          // Race condition: caller's app showed peer as online but they went offline.
-          // Emit call_unavailable so CallingScreen can handle it.
+          // Receiver is offline (not registered in the socket registry).
+          // Send an immediate FCM push so they see the missed call right away
+          // rather than only when they next open the chat screen.
+          createNotification(io, {
+            recipientUid: to,
+            recipientRole: receiverRole,
+            type: "call_incoming",
+            title: `Missed ${normalizedCallType === "video" ? "video" : "voice"} call`,
+            body: `${resolvedCallerName} tried to call you`,
+            data: {
+              roomId: String(roomId),
+              callerId: String(callerId),
+              callerRole: String(callerRole),
+              callerName: String(resolvedCallerName),
+              callerImage: String(callerImage || ""),
+              callType: normalizedCallType,
+              jitsiRoom: String(jitsiRoom || ""),
+              callEventId: String(callEvent._id),
+              missed: "true",
+            },
+          }).catch((err) =>
+            console.error(`[call] FCM missed-call notification failed: ${err.message}`)
+          );
+
+          console.log(`📵 call_unavailable: receiver ${to} is offline, missed-call FCM sent`);
+
           return socket.emit("call_unavailable", {
             roomId,
             callType: normalizedCallType,
@@ -648,10 +678,11 @@ export function registerRealtimeServer(io) {
           });
         }
 
-        io.to(buildPersonalRoom(receiverRole, to)).emit("call_incoming", {
+        const personalRoom = buildPersonalRoom(receiverRole, to);
+        io.to(personalRoom).emit("call_incoming", {
           roomId,
           callerId,
-          callerName: callerName || socket.data.userName || callerId,
+          callerName: resolvedCallerName,
           callerImage: callerImage || null,
           callerRole,
           isVideo,
@@ -659,10 +690,13 @@ export function registerRealtimeServer(io) {
           callEventId: String(callEvent._id),
         });
 
+        console.log(`📲 call_incoming sent to room="${personalRoom}" callEventId=${callEvent._id}`);
+
         socket.emit("call_initiated", {
           callEventId: String(callEvent._id),
         });
       } catch (err) {
+        console.error(`[call_initiate] error: ${err.message}`);
         emitSocketError(socket, err.message);
       }
     });
@@ -671,17 +705,20 @@ export function registerRealtimeServer(io) {
     socket.on("call_accepted", async ({ to, jitsiRoom, callEventId }) => {
       const receiverRole = socket.data.role;
       const callerRole = receiverRole === "student" ? "soultee" : "student";
+      console.log(`✅ call_accepted: receiver=${socket.data.userId} → caller=${to} room=${jitsiRoom}`);
 
       try {
         if (callEventId) await markCallAccepted(callEventId);
       } catch (_) { /* non-fatal */ }
 
       if (to) {
-        io.to(buildPersonalRoom(callerRole, to)).emit("call_accepted", {
+        const targetRoom = buildPersonalRoom(callerRole, to);
+        io.to(targetRoom).emit("call_accepted", {
           from: socket.data.userId,
           jitsiRoom,
           callEventId,
         });
+        console.log(`📤 call_accepted relayed to room="${targetRoom}"`);
       }
     });
 
@@ -689,6 +726,7 @@ export function registerRealtimeServer(io) {
     socket.on("call_rejected", async ({ to, jitsiRoom, callEventId }) => {
       const receiverRole = socket.data.role;
       const callerRole = receiverRole === "student" ? "soultee" : "student";
+      console.log(`❌ call_rejected: receiver=${socket.data.userId} → caller=${to}`);
 
       try {
         if (callEventId) await markCallRejected(callEventId);
@@ -707,6 +745,7 @@ export function registerRealtimeServer(io) {
     socket.on("call_cancelled", async ({ to, jitsiRoom, callEventId }) => {
       const callerRole = socket.data.role;
       const receiverRole = callerRole === "student" ? "soultee" : "student";
+      console.log(`🚫 call_cancelled: caller=${socket.data.userId} → receiver=${to}`);
 
       try {
         if (callEventId) await markCallCancelled(callEventId);
