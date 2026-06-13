@@ -51,10 +51,11 @@ let isAppReady = false;
 // ─── Socket.io ────────────────────────────────────────────────────────────────
 const io = new Server(httpServer, {
   cors: { origin: "*", methods: ["GET", "POST"] },
-  // Increase timeouts so a Render cold-start (30-45 s) doesn't drop the socket
-  // before the client can finish the handshake.
-  pingTimeout: 60000,
-  pingInterval: 25000,
+  // Render Pro — no cold start. Use tight ping values so dead connections are
+  // detected quickly and clients reconnect without a long wait.
+  pingTimeout: 20000,
+  pingInterval: 10000,
+  connectTimeout: 10000,
 });
 registerRealtimeServer(io);
 registerAnalyticsNamespace(io);
