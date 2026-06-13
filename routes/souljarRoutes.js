@@ -898,4 +898,27 @@ router.get("/soulway-rule-report/:userId", async (req, res) => {
   }
 });
 
+///////////////////////////////////////////////////////////
+// 📮 MY LETTERS — fetch user's sent letters
+///////////////////////////////////////////////////////////
+
+router.get("/letters/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!userId || userId === "anonymous") {
+      return res.status(400).json({ message: "userId is required" });
+    }
+    const letters = await Souljar.find({ userId })
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .select(
+        "jarCode topic text mood activity stamp anonymous reflectionSeconds wordCount createdAt"
+      );
+    res.json({ letters });
+  } catch (error) {
+    console.error("My Letters Error:", error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
 export default router;
