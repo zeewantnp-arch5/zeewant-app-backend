@@ -51,8 +51,11 @@ let isAppReady = false;
 // ─── Socket.io ────────────────────────────────────────────────────────────────
 const io = new Server(httpServer, {
   cors: { origin: "*", methods: ["GET", "POST"] },
-  // WebSocket-only — avoids polling→WS upgrade step that Render's proxy can drop.
-  transports: ["websocket"],
+  // Accept both transports for backward compatibility with older app builds.
+  // New Flutter builds use setTransports(['websocket']) and skip polling entirely,
+  // so the polling→WS upgrade on Render's proxy is never triggered by them.
+  transports: ["polling", "websocket"],
+  upgradeTimeout: 10000,
   pingTimeout: 20000,
   pingInterval: 10000,
   connectTimeout: 10000,
