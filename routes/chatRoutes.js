@@ -130,6 +130,22 @@ export default function createChatRoutes(io) {
 
       if (markRead && userId && userRole) {
         markRoomMessagesRead({ roomId: req.params.roomId, userId, userRole })
+          .then((updatedCount) => {
+            if (updatedCount > 0) {
+              // Tell room members messages were read (sender sees double-tick)
+              io.to(req.params.roomId).emit("room_messages_read", {
+                roomId: req.params.roomId,
+                readerUid: userId,
+                readerRole: userRole,
+                count: updatedCount,
+              });
+              // Reset badge on chat list
+              io.to(`${userRole}:${userId}`).emit("session_updated", {
+                roomId: req.params.roomId,
+                unreadCount: 0,
+              });
+            }
+          })
           .catch(err => console.error("[chat/markRead] failed:", err.message));
       }
 
@@ -199,6 +215,23 @@ export default function createChatRoutes(io) {
         roomId: req.params.roomId,
         message: payload,
       });
+      // Push session list refresh to both sides (new preview + updated badge count)
+      getRoomMessageMetadata({
+        roomIds: [req.params.roomId],
+        recipientUid,
+        recipientRole,
+      }).then((metaMap) => {
+        const meta = metaMap.get(req.params.roomId) || {};
+        const base = { roomId: req.params.roomId, latestMessage: meta.latestMessage || payload };
+        io.to(buildPersonalRoom(recipientRole, recipientUid)).emit("session_updated", {
+          ...base,
+          unreadCount: meta.unreadCount || 0,
+        });
+        io.to(buildPersonalRoom(senderRole, senderId)).emit("session_updated", {
+          ...base,
+          unreadCount: 0, // sender has no unread for their own message
+        });
+      }).catch(() => {});
 
       // Skip standard "New Message" push for missed-call entries — the caller
       // already sends a dedicated FCM missed-call notification separately.

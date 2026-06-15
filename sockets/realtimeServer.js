@@ -10,6 +10,10 @@ import {
   markMessageDelivered,
   markMessageRead,
   getRoomLinkForParticipant,
+  markRoomMessagesDelivered,
+  markRoomMessagesRead,
+  getRoomMessageMetadata,
+  getUnreadMessageSummary,
 } from "../services/messageService.js";
 import {
   createCallEvent,
@@ -21,6 +25,7 @@ import {
   markMissedCallsNotified,
   buildCallEventText,
 } from "../services/callEventService.js";
+import { generateJitsiToken, buildJitsiServerUrl } from "../services/jitsiService.js";
 
 function emitSocketError(socket, message, details = {}) {
   socket.emit("socket_error", { message, ...details });
@@ -187,6 +192,49 @@ function ensureJoinedRoom(socket, roomId) {
   return socket.data.joinedRooms?.has(roomId);
 }
 
+// ── Helper: fetch latest-message + unread count for a room, then push
+//           a session_updated event to both participants ─────────────────────
+async function pushSessionUpdate(io, roomId, studentUid, soulteeUid) {
+  try {
+    const metaMap = await getRoomMessageMetadata({
+      roomIds: [String(roomId)],
+      recipientUid: null, // fetch for both sides below
+      recipientRole: null,
+    });
+    const base = metaMap.get(String(roomId)) || {};
+
+    // Unread counts per participant
+    const [studentMeta, soulteeeMeta] = await Promise.all([
+      getRoomMessageMetadata({
+        roomIds: [String(roomId)],
+        recipientUid: studentUid,
+        recipientRole: "student",
+      }),
+      getRoomMessageMetadata({
+        roomIds: [String(roomId)],
+        recipientUid: soulteeUid,
+        recipientRole: "soultee",
+      }),
+    ]);
+
+    const payload = {
+      roomId: String(roomId),
+      latestMessage: base.latestMessage || null,
+    };
+
+    io.to(buildPersonalRoom("student", studentUid)).emit("session_updated", {
+      ...payload,
+      unreadCount: (studentMeta.get(String(roomId)) || {}).unreadCount || 0,
+    });
+    io.to(buildPersonalRoom("soultee", soulteeUid)).emit("session_updated", {
+      ...payload,
+      unreadCount: (soulteeeMeta.get(String(roomId)) || {}).unreadCount || 0,
+    });
+  } catch (err) {
+    console.error("[session_updated] push failed:", err.message);
+  }
+}
+
 export function registerRealtimeServer(io) {
   const soulteeSocketsByUid = new Map();
   const studentSocketsByUid = new Map();
@@ -298,6 +346,25 @@ export function registerRealtimeServer(io) {
 
       socket.emit("room_joined", { roomId, role: resolvedRole });
       console.log(`👥 ${userName || userId} joined room ${roomId}`);
+
+      // Auto-deliver all queued "sent" messages for this user when they open the chat
+      try {
+        const deliveredCount = await markRoomMessagesDelivered({
+          roomId,
+          recipientUid: userId,
+          recipientRole: resolvedRole,
+        });
+        if (deliveredCount > 0) {
+          // Notify the sender their messages were delivered
+          io.to(roomId).emit("messages_bulk_delivered", {
+            roomId,
+            recipientUid: userId,
+            count: deliveredCount,
+          });
+        }
+      } catch (err) {
+        console.error("[join_room] auto-deliver failed:", err.message);
+      }
     });
 
     socket.on("send_message", async ({ roomId, senderId, senderName, senderRole, text, type = "text" }) => {
@@ -310,16 +377,37 @@ export function registerRealtimeServer(io) {
       }
 
       try {
-        const { message } = await createPersistentMessage({
+        const resolvedRole = senderRole || socket.data.role;
+        const { message, recipientUid, recipientRole, link } = await createPersistentMessage({
           roomId,
           senderId,
           senderName,
-          senderRole: senderRole || socket.data.role,
+          senderRole: resolvedRole,
           text,
           type,
         });
 
-        io.to(roomId).emit("new_message", serializeMessage(message));
+        const payload = serializeMessage(message);
+
+        // 1. Deliver to everyone currently in the chat room
+        io.to(roomId).emit("new_message", payload);
+        // 2. Deliver to recipient's personal room (catches them when not in chat screen)
+        io.to(buildPersonalRoom(recipientRole, recipientUid)).emit("new_message", payload);
+        // 3. Echo to sender's personal room (multi-device / race condition safety)
+        io.to(buildPersonalRoom(resolvedRole, senderId)).emit("new_message", payload);
+        // 4. Legacy unread badge event
+        io.to(buildPersonalRoom(recipientRole, recipientUid)).emit("message_unread", {
+          roomId,
+          message: payload,
+        });
+
+        // 5. Push session list update so chat list refreshes with new preview + badge
+        pushSessionUpdate(
+          io,
+          roomId,
+          link.studentFirebaseUid,
+          link.soulteeFirebaseUid
+        );
       } catch (err) {
         emitSocketError(socket, err.message, { roomId });
       }
@@ -339,6 +427,52 @@ export function registerRealtimeServer(io) {
       }
 
       socket.to(roomId).emit("user_stop_typing", senderId);
+    });
+
+    // Mark all messages in a room as read — replaces the HTTP PATCH round-trip.
+    // Emits room_messages_read to the room (so sender sees tick update) and
+    // session_updated to both personal rooms (so chat list badge resets).
+    socket.on("mark_room_read", async ({ roomId, userId, userRole }) => {
+      if (!ensureJoinedRoom(socket, roomId)) {
+        return emitSocketError(socket, "Join the room before marking messages read", { roomId });
+      }
+
+      const resolvedUid = userId || socket.data.userId;
+      const resolvedRole = userRole || socket.data.role;
+
+      if (!resolvedUid || !resolvedRole) {
+        return emitSocketError(socket, "userId and userRole are required for mark_room_read", { roomId });
+      }
+
+      try {
+        const updatedCount = await markRoomMessagesRead({
+          roomId,
+          userId: resolvedUid,
+          userRole: resolvedRole,
+        });
+
+        if (updatedCount > 0) {
+          // Tell the sender their messages were read (double-tick)
+          io.to(roomId).emit("room_messages_read", {
+            roomId,
+            readerUid: resolvedUid,
+            readerRole: resolvedRole,
+            count: updatedCount,
+          });
+
+          // Zero the unread badge on this user's session list
+          const link = await StudentSoulteeLink.findById(roomId).lean();
+          if (link) {
+            pushSessionUpdate(io, roomId, link.studentFirebaseUid, link.soulteeFirebaseUid);
+          }
+        }
+
+        // Emit updated total unread summary so app badge refreshes
+        const summary = await getUnreadMessageSummary({ userId: resolvedUid, userRole: resolvedRole });
+        socket.emit("unread_summary_updated", summary);
+      } catch (err) {
+        emitSocketError(socket, err.message, { roomId });
+      }
     });
 
     // ── Message Status Updates ──────────────────────────────────────────────────
@@ -605,8 +739,9 @@ export function registerRealtimeServer(io) {
 
     // ── Jitsi Call Lifecycle ───────────────────────────────────────────────────
     // Emitted by caller when they tap the call button and peer is online.
-    // Backend creates a CallEvent, checks actual online state, then routes
-    // the call_incoming event to the receiver's personal room.
+    // Backend creates a CallEvent, checks actual online state, generates Jitsi
+    // JWT tokens for both parties (bypasses lobby), then routes call_incoming
+    // to the receiver's personal room.
     socket.on("call_initiate", async ({ to, roomId, callerName, callerImage, isVideo, jitsiRoom }) => {
       const callerId = socket.data.userId;
       const callerRole = socket.data.role;
@@ -624,6 +759,7 @@ export function registerRealtimeServer(io) {
       const isReceiverOnline = isUserOnline(receiverRegistry, to);
       const normalizedCallType = isVideo ? "video" : "audio";
       const resolvedCallerName = callerName || socket.data.userName || callerId;
+      const jitsiServerUrl = buildJitsiServerUrl();
 
       console.log(
         `📞 call_initiate: ${resolvedCallerName}(${callerId}) → ${to} ` +
@@ -643,10 +779,9 @@ export function registerRealtimeServer(io) {
           jitsiRoom: jitsiRoom || null,
         });
 
+        const callEventId = String(callEvent._id);
+
         if (!isReceiverOnline) {
-          // Receiver is offline (not registered in the socket registry).
-          // Send an immediate FCM push so they see the missed call right away
-          // rather than only when they next open the chat screen.
           createNotification(io, {
             recipientUid: to,
             recipientRole: receiverRole,
@@ -661,7 +796,7 @@ export function registerRealtimeServer(io) {
               callerImage: String(callerImage || ""),
               callType: normalizedCallType,
               jitsiRoom: String(jitsiRoom || ""),
-              callEventId: String(callEvent._id),
+              callEventId,
               missed: "true",
             },
           }).catch((err) =>
@@ -674,9 +809,24 @@ export function registerRealtimeServer(io) {
             roomId,
             callType: normalizedCallType,
             reason: "receiver_offline",
-            callEventId: String(callEvent._id),
+            callEventId,
           });
         }
+
+        // Generate JWT tokens — moderator:true means both parties skip the lobby
+        const callerToken = generateJitsiToken({
+          userId: callerId,
+          userName: resolvedCallerName,
+          roomName: jitsiRoom,
+          isModerator: true,
+        });
+
+        const receiverToken = generateJitsiToken({
+          userId: to,
+          userName: null, // receiver name unknown here; Flutter fills displayName separately
+          roomName: jitsiRoom,
+          isModerator: true,
+        });
 
         const personalRoom = buildPersonalRoom(receiverRole, to);
         io.to(personalRoom).emit("call_incoming", {
@@ -687,13 +837,17 @@ export function registerRealtimeServer(io) {
           callerRole,
           isVideo,
           jitsiRoom,
-          callEventId: String(callEvent._id),
+          jitsiServerUrl,
+          jitsiToken: receiverToken,   // receiver uses this when joining
+          callEventId,
         });
 
         console.log(`📲 call_incoming sent to room="${personalRoom}" callEventId=${callEvent._id}`);
 
         socket.emit("call_initiated", {
-          callEventId: String(callEvent._id),
+          callEventId,
+          jitsiToken: callerToken,     // caller uses this when joining
+          jitsiServerUrl,
         });
       } catch (err) {
         console.error(`[call_initiate] error: ${err.message}`);
@@ -705,7 +859,8 @@ export function registerRealtimeServer(io) {
     socket.on("call_accepted", async ({ to, jitsiRoom, callEventId }) => {
       const receiverRole = socket.data.role;
       const callerRole = receiverRole === "student" ? "soultee" : "student";
-      console.log(`✅ call_accepted: receiver=${socket.data.userId} → caller=${to} room=${jitsiRoom}`);
+      const receiverId = socket.data.userId;
+      console.log(`✅ call_accepted: receiver=${receiverId} → caller=${to} room=${jitsiRoom}`);
 
       try {
         if (callEventId) await markCallAccepted(callEventId);
@@ -714,12 +869,24 @@ export function registerRealtimeServer(io) {
       if (to) {
         const targetRoom = buildPersonalRoom(callerRole, to);
         io.to(targetRoom).emit("call_accepted", {
-          from: socket.data.userId,
+          from: receiverId,
           jitsiRoom,
           callEventId,
         });
         console.log(`📤 call_accepted relayed to room="${targetRoom}"`);
       }
+
+      // Notify both parties the call is now live
+      io.to(buildPersonalRoom(callerRole, to)).emit("call_state_changed", {
+        state: "in_progress",
+        callEventId,
+        jitsiRoom,
+      });
+      socket.emit("call_state_changed", {
+        state: "in_progress",
+        callEventId,
+        jitsiRoom,
+      });
     });
 
     // Emitted by the receiver when they tap Decline.
@@ -736,6 +903,10 @@ export function registerRealtimeServer(io) {
         io.to(buildPersonalRoom(callerRole, to)).emit("call_rejected", {
           from: socket.data.userId,
           jitsiRoom,
+          callEventId,
+        });
+        io.to(buildPersonalRoom(callerRole, to)).emit("call_state_changed", {
+          state: "rejected",
           callEventId,
         });
       }
@@ -755,6 +926,10 @@ export function registerRealtimeServer(io) {
         io.to(buildPersonalRoom(receiverRole, to)).emit("call_cancelled", {
           from: socket.data.userId,
           jitsiRoom,
+        });
+        io.to(buildPersonalRoom(receiverRole, to)).emit("call_state_changed", {
+          state: "cancelled",
+          callEventId,
         });
       }
     });

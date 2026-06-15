@@ -6,6 +6,7 @@ import {
   getCallHistoryForRoom,
   markCallsSeen,
 } from "../services/callEventService.js";
+import { generateJitsiToken, buildJitsiServerUrl } from "../services/jitsiService.js";
 
 const router = express.Router();
 
@@ -74,6 +75,35 @@ router.patch("/seen/bulk", async (req, res) => {
     }
     await markCallsSeen(callIds);
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ── GET /api/calls/jitsi-token  — generate a Jitsi JWT for the calling user ──
+// Query: ?room=jitsiRoomName&userId=uid&userName=Display+Name
+// Returns: { token, serverUrl } — Flutter passes token to JitsiMeetConferenceOptions
+router.get("/jitsi-token", async (req, res) => {
+  try {
+    const { room, userId, userName } = req.query;
+
+    if (!room || !userId) {
+      return res.status(400).json({ message: "room and userId are required" });
+    }
+
+    const token = generateJitsiToken({
+      userId,
+      userName: userName || userId,
+      roomName: room,
+      isModerator: true,
+    });
+
+    res.json({
+      token,
+      serverUrl: buildJitsiServerUrl(),
+      room,
+      expiresInSeconds: 7200,
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
