@@ -156,7 +156,20 @@ function startHttpServer() {
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Server listening on port ${PORT} (bootstrap in progress)`);
 
-    // Render Pro — no cold start, keep-alive self-ping not needed.
+    // Render free tier spins down after 15 min of no incoming traffic.
+    // Ping our own /health endpoint every 14 min so the server stays awake.
+    const selfPingUrl =
+      process.env.RENDER_EXTERNAL_URL ||
+      process.env.BACKEND_URL ||
+      `http://localhost:${PORT}`;
+
+    setInterval(async () => {
+      try {
+        await fetch(`${selfPingUrl}/health`, { signal: AbortSignal.timeout(10000) });
+      } catch (_) {
+        // Non-fatal — server is already awake; ping just keeps Render's timer reset
+      }
+    }, 14 * 60 * 1000); // every 14 minutes
   });
 }
 
