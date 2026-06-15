@@ -100,7 +100,9 @@ export default function createChatRoutes(io) {
   });
 
   // ─── GET /api/chat/:roomId  — message history (newest last) ────────────────
-  router.get("/:roomId", requireSubscription, async (req, res) => {
+  // No subscription gate here — participants can always read their own history
+  // regardless of whether the subscription is active or the session has ended.
+  router.get("/:roomId", async (req, res) => {
     try {
       const page = Math.max(1, parseInt(req.query.page) || 1);
       const limit = Math.min(100, parseInt(req.query.limit) || 50);
@@ -109,11 +111,17 @@ export default function createChatRoutes(io) {
       const userRole = req.query.userRole;
       const markRead = req.query.markRead !== "false";
 
+      if (!userId || !userRole) {
+        return res.status(400).json({ message: "userId and userRole query params are required" });
+      }
+
+      // Allow reading history even when session is ended or pending
       const link = await getRoomLinkForParticipant({
         roomId: req.params.roomId,
         userId,
         userRole,
         allowPending: true,
+        allowEnded: true,
       });
 
       if (!link) {

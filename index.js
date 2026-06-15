@@ -51,14 +51,21 @@ let isAppReady = false;
 // ─── Socket.io ────────────────────────────────────────────────────────────────
 const io = new Server(httpServer, {
   cors: { origin: "*", methods: ["GET", "POST"] },
-  // Accept both transports for backward compatibility with older app builds.
-  // New Flutter builds use setTransports(['websocket']) and skip polling entirely,
-  // so the polling→WS upgrade on Render's proxy is never triggered by them.
+  // Both transports: Flutter WebSocket-only clients skip polling entirely;
+  // browser/older builds use polling→WS upgrade.
   transports: ["polling", "websocket"],
-  upgradeTimeout: 10000,
-  pingTimeout: 20000,
-  pingInterval: 10000,
-  connectTimeout: 10000,
+  // pingInterval: how often the server sends a heartbeat to the client.
+  // Set to 25 s so Render's 30 s idle-connection timeout is never hit.
+  pingInterval: 25000,
+  // pingTimeout: how long to wait for a pong before declaring the socket dead.
+  // 60 s gives mobile clients time to respond after backgrounding / network switch.
+  pingTimeout: 60000,
+  // upgradeTimeout: time allowed for the HTTP→WebSocket upgrade handshake.
+  upgradeTimeout: 30000,
+  // connectTimeout: maximum time for the initial connection handshake.
+  connectTimeout: 45000,
+  // Allow up to 10 MB payloads (image/file messages).
+  maxHttpBufferSize: 1e7,
 });
 registerRealtimeServer(io);
 registerAnalyticsNamespace(io);

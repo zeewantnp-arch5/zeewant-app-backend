@@ -1,8 +1,11 @@
 import Message from "../models/Message.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 
-function allowedStatuses(allowPending) {
-  return allowPending ? ["pending", "active"] : ["active"];
+function allowedStatuses(allowPending, allowEnded) {
+  const statuses = ["active"];
+  if (allowPending) statuses.push("pending");
+  if (allowEnded)  statuses.push("ended");
+  return statuses;
 }
 
 export function serializeMessage(message) {
@@ -34,6 +37,7 @@ export async function getRoomLinkForParticipant({
   userId,
   userRole,
   allowPending = false,
+  allowEnded = false,
 }) {
   if (!roomId || !userId || !userRole) {
     return null;
@@ -41,7 +45,7 @@ export async function getRoomLinkForParticipant({
 
   const link = await StudentSoulteeLink.findOne({
     _id: roomId,
-    status: { $in: allowedStatuses(allowPending) },
+    status: { $in: allowedStatuses(allowPending, allowEnded) },
   }).lean();
 
   if (!link) {

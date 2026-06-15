@@ -164,11 +164,11 @@ async function validateRoomAccess(roomId, userId, userRole) {
     return null;
   }
 
-  // Allow both "active" and "pending" links — consistent with the HTTP chat
-  // routes that use allowPending: true.
+  // Allow active, pending, AND ended — participants can always re-open a room
+  // to read history even after a session ends.
   const link = await StudentSoulteeLink.findOne({
     _id: roomId,
-    status: { $in: ["active", "pending"] },
+    status: { $in: ["active", "pending", "ended"] },
   })
     .select("studentFirebaseUid soulteeFirebaseUid status")
     .lean();
@@ -190,6 +190,42 @@ async function validateRoomAccess(roomId, userId, userRole) {
 
 function ensureJoinedRoom(socket, roomId) {
   return socket.data.joinedRooms?.has(roomId);
+}
+
+// ── Helper: push all unread messages to a user who just (re)connected ────────
+// This covers messages that arrived while the socket was dead.
+async function flushPendingMessages(io, userId, userRole) {
+  // Find rooms this user is part of
+  const field = userRole === "student" ? "studentFirebaseUid" : "soulteeFirebaseUid";
+  const links = await StudentSoulteeLink.find({
+    [field]: userId,
+    status: { $in: ["active", "pending"] },
+  }).select("_id").lean();
+
+  if (!links.length) return;
+
+  const roomIds = links.map((l) => String(l._id));
+  const personalRoom = buildPersonalRoom(userRole, userId);
+
+  // Fetch up to 50 recent undelivered/unread messages addressed to this user
+  const undelivered = await Message.find({
+    roomId: { $in: roomIds },
+    recipientUid: userId,
+    recipientRole: userRole,
+    status: "sent",
+  })
+    .sort({ createdAt: 1 })
+    .limit(50)
+    .lean();
+
+  if (!undelivered.length) return;
+
+  // Re-push each message to the user's personal room so Flutter receives it
+  for (const msg of undelivered) {
+    io.to(personalRoom).emit("new_message", serializeMessage(msg));
+  }
+
+  console.log(`[flush] pushed ${undelivered.length} pending messages to ${userRole}:${userId}`);
 }
 
 // ── Helper: fetch latest-message + unread count for a room, then push
@@ -261,6 +297,11 @@ export function registerRealtimeServer(io) {
           console.error("Missed-call notification flush error:", err.message);
         });
       }
+
+      // On every (re)connect: push any messages sent while this socket was offline
+      flushPendingMessages(io, uid, "student").catch((err) => {
+        console.error("[student_go_online] pending-message flush error:", err.message);
+      });
     });
 
     socket.on("soultee_go_online", async ({ uid, name }) => {
@@ -299,6 +340,11 @@ export function registerRealtimeServer(io) {
           console.error("Presence update error:", err.message);
         }
       }
+
+      // On every (re)connect: push any messages sent while this socket was offline
+      flushPendingMessages(io, uid, "soultee").catch((err) => {
+        console.error("[soultee_go_online] pending-message flush error:", err.message);
+      });
     });
 
     socket.on("soultee_set_busy", async ({ uid }) => {
@@ -470,6 +516,56 @@ export function registerRealtimeServer(io) {
         // Emit updated total unread summary so app badge refreshes
         const summary = await getUnreadMessageSummary({ userId: resolvedUid, userRole: resolvedRole });
         socket.emit("unread_summary_updated", summary);
+      } catch (err) {
+        emitSocketError(socket, err.message, { roomId });
+      }
+    });
+
+    // Fetch messages missed during a socket outage.
+    // Flutter calls this on reconnect with the timestamp of the last message it
+    // successfully received. The server responds with everything newer, so the
+    // chat list fills in the gap without a full page reload.
+    socket.on("sync_room_messages", async ({ roomId, since, userId, userRole }) => {
+      const resolvedUid = userId || socket.data.userId;
+      const resolvedRole = userRole || socket.data.role;
+
+      if (!roomId || !resolvedUid || !resolvedRole) {
+        return emitSocketError(socket, "roomId, userId, and userRole are required for sync_room_messages");
+      }
+
+      try {
+        const sinceDate = since ? new Date(since) : new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+        const messages = await Message.find({
+          roomId,
+          createdAt: { $gt: sinceDate },
+        })
+          .sort({ createdAt: 1 })
+          .limit(100)
+          .lean();
+
+        socket.emit("sync_room_messages_result", {
+          roomId,
+          messages: messages.map(serializeMessage),
+          since: sinceDate.toISOString(),
+        });
+
+        // Auto-deliver any that were addressed to this user
+        const toDeliver = messages.filter(
+          (m) => m.recipientUid === resolvedUid && m.status === "sent"
+        );
+        if (toDeliver.length > 0) {
+          await markRoomMessagesDelivered({
+            roomId,
+            recipientUid: resolvedUid,
+            recipientRole: resolvedRole,
+          });
+          io.to(roomId).emit("messages_bulk_delivered", {
+            roomId,
+            recipientUid: resolvedUid,
+            count: toDeliver.length,
+          });
+        }
       } catch (err) {
         emitSocketError(socket, err.message, { roomId });
       }
