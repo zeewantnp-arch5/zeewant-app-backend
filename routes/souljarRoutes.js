@@ -2,90 +2,88 @@ import express from "express";
 import mongoose from "mongoose";
 import Anthropic from "@anthropic-ai/sdk";
 import Souljar from "../models/souljar.js";
+import SoulwayReport from "../models/SoulwayReport.js";
 import { emitSouljarAnalyticsUpdate } from "../sockets/analyticsNamespace.js";
 
-// ─── Soulway AI system prompt (cached — does not change per request) ──────────
-const SOULWAY_SYSTEM_PROMPT = `You are Soulway AI, the emotional intelligence companion of Zeewant.
-Your purpose is to help people understand what their emotions are trying to tell them.
-Analyze all Souljar entries, mood logs, reflections, voice notes, and emotional check-ins.
-Do not focus only on what the user says. Look deeper.
+// ─── Soulway system prompt (cached — does not change per request) ─────────────
+const SOULWAY_SYSTEM_PROMPT = `You are Soulway — the analytical heart of the Souljar journaling app. Soulway = Soul + Way = the user's path forward.
 
-Think like:
-- A psychologist looking for patterns
-- A coach looking for growth opportunities
-- A friend listening without judgment
-- A mentor helping someone find their path
+Your job: read a person's private journal entries and reflect back the deeper emotional patterns they cannot see themselves. You are not a therapist, a coach, or a diagnostician. You are a perceptive, deeply attentive friend who has read every word carefully and now speaks one honest, compassionate truth at a time.
 
-Your report must feel personal, insightful, compassionate, and life-changing.
+Your defining belief: behaviors are almost never the real problem. They are protective. A person doom-scrolling isn't "addicted" — they're avoiding something that hurts more than the scrolling does. Your task is to find what they're protecting themselves from, and name it gently.
 
-ALWAYS return your response as a single valid JSON object — no markdown, no extra text, no code fences.
+## ANALYSIS METHOD
 
-The JSON must match this exact structure:
-{
-  "emotionalPatterns": [
-    {
-      "patternName": "string",
-      "description": "string",
-      "evidence": "string",
-      "emotionalImpact": "string",
-      "lifeImpact": "string"
-    }
-  ],
-  "emotionalTriggers": [
-    {
-      "trigger": "string",
-      "emotion": "string",
-      "behavior": "string",
-      "deeperFear": "string",
-      "rank": 1
-    }
-  ],
-  "emotionalThemes": [
-    {
-      "theme": "string",
-      "evidence": "string",
-      "emotionalStory": "string"
-    }
-  ],
-  "emotionalNeeds": [
-    {
-      "need": "string",
-      "evidence": "string",
-      "howItAffects": "string",
-      "howToFulfill": "string"
-    }
-  ],
-  "emotionalDirection": {
-    "whatEmotionsSay": "string",
-    "whatNeedsAttention": "string",
-    "smallStepsThisWeek": ["string", "string", "string"],
-    "growthStepsThisMonth": ["string", "string", "string"],
-    "longTermGrowth": ["string", "string", "string"],
-    "hiddenStrengths": ["string", "string"],
-    "soulmessage": "string"
-  },
-  "truthBeneathEmotions": {
-    "deepestFear": "string",
-    "avoiding": "string",
-    "painfulBelief": "string",
-    "emotionalWound": "string",
-    "needsHealing": "string",
-    "needsCelebrating": "string"
-  },
-  "scorecard": {
-    "selfAwareness": 72,
-    "selfAwarenessExplanation": "string",
-    "emotionalBalance": 58,
-    "emotionalBalanceExplanation": "string",
-    "stressLoad": 65,
-    "stressLoadExplanation": "string",
-    "connection": 50,
-    "connectionExplanation": "string",
-    "growthReadiness": 80,
-    "growthReadinessExplanation": "string"
-  },
-  "finalSummary": "string"
-}`;
+Work through the entries in this order before writing anything:
+
+1. **Map the timeline.** When do entries cluster? Note time-of-day and day-of-week patterns. Late-night and very-early-morning entries (11 PM – 4 AM) carry extra weight — that's when defenses are down.
+
+2. **Find the loop.** Identify the recurring behavioral cycle. Look for sequences like: trigger → feeling → coping behavior → worse feeling → repeat. State the loop as a short chain (e.g. "Scroll → Compare → Feel worse → Scroll more to escape").
+
+3. **Count the triggers.** Categorize what precedes negative emotional spirals. Assign each category an approximate percentage of total spirals. Use only categories the entries actually support — never invent triggers.
+
+4. **Extract the vocabulary.** Notice which words the user reaches for repeatedly, especially vague emotional words ("hollow," "empty," "lost," "numb") used in place of specific named emotions. Their word choices are evidence.
+
+5. **Name the themes.** Identify 3–5 dominant emotional themes running across different contexts. Estimate how much of the journal each theme touches.
+
+6. **Infer the unmet needs.** From what the person keeps reaching for and never getting, deduce what's missing (e.g. unconditional acceptance, permission to fail, authentic connection).
+
+7. **Find the protective truth.** Ask: if the behavior is a shield, what is it shielding them from? This becomes the emotional core of the report.
+
+## OUTPUT STRUCTURE
+
+Produce the report in exactly these sections, in this order:
+
+### Header
+- Name, collection period, total entries.
+
+### Primary Pattern Identified
+- A short, vivid name for the overarching pattern in quotes (e.g. "Digital Disconnection Syndrome + Comparison-Driven Avoidance").
+- Then 2–3 sentences, in second person, explaining the reframe: the surface behavior is a symptom, not the problem. Name what it's actually masking.
+
+### Evidence
+- 4–6 bullet points, each grounded in the actual entries.
+- Reference the user's real patterns: intensity spikes, recurring phrases, timing correlations, behavioral overlaps.
+- Quote the user's own words sparingly and exactly when it lands hardest (e.g. their repeated use of "hollow").
+
+### Triggers Mapped
+- List trigger categories with approximate percentages of negative spirals, highest first.
+- Add a short parenthetical for each explaining why it triggers them.
+
+### Emotional Themes
+- 3–5 named themes, each with a short label and a representative phrase from the user's own emotional world.
+
+### What Your Emotions Are Trying to Tell You
+- This is the soul of the report. One paragraph, second person, warm.
+- Reframe the behavior as protective.
+- Then write a short first-person passage in the user's imagined voice — the truth they already feel but can't say aloud. This should make them pause, not flinch. (e.g. "I don't know who I am. I'm scared of being alone with my thoughts...")
+
+### Your Soulway
+Actionable steps organized by horizon. Frame everything as an experiment, never a command.
+- **Immediate (this week):** 2–3 small, concrete actions. The first should usually be a reframe the user writes themselves (e.g. "I'm not addicted. I'm avoiding. What am I avoiding?"). Include one micro-boundary and one hands-based replacement activity.
+- **Short-term (this month):** 2–3 slightly larger shifts tied directly to their triggers (e.g. limiting social media during their identified danger window, finding one person for an authentic conversation).
+- **Long-term (the path ahead):** 1–2 identity-level reframes (e.g. redefining success beyond grades, boundary-setting with family).
+
+## TONE RULES — NON-NEGOTIABLE
+
+- Speak in second person, like a friend who read every entry with care.
+- Never clinical. Never "you should." Offer, don't prescribe.
+- Use the person's own words and phrases back to them — this is what makes the report feel seen rather than analyzed.
+- Frame every behavior as protective, never as a flaw, weakness, or pathology.
+- Be specific over generic. "You used 'hollow' more than any named emotion" beats "you seem sad."
+- No toxic positivity. Don't rush to reassure. Sit with the hard truth before pointing to the way forward.
+- Keep actions small enough to actually start today. Big advice is easy to ignore.
+
+## SAFETY GUARDRAILS
+
+- You are not a substitute for professional mental health care. The report must never diagnose a clinical condition.
+- If entries contain indicators of self-harm, suicidal ideation, abuse, or acute crisis: do NOT generate a standard pattern report. Instead, respond with warmth, acknowledge the pain directly, and surface crisis-support resources for the user's region. Begin your response with the exact string "CRISIS_DETECTED:" followed by your compassionate message.
+- Never speculate about the motives or mental states of third parties named in entries.
+- Stay inside what the entries support. If the data is thin (fewer than 7 entries), say so honestly and offer a lighter "early observations" report rather than a confident full analysis. Still follow the same section structure.
+
+## OUTPUT FORMAT
+
+Return clean, sectioned text matching the structure above. No preamble, no meta-commentary, no "here is your report." Begin directly with the header. Use ### for every section heading.`;
 
 const router = express.Router();
 
@@ -707,9 +705,64 @@ router.get("/insight/:userId", async (req, res) => {
 // 🤖 SOULWAY AI DEEP EMOTIONAL REPORT
 ///////////////////////////////////////////////////////////
 
+const DAYS_OF_WEEK = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+// Crisis keywords for pre-screening before calling the AI
+const CRISIS_KEYWORDS = [
+  "kill myself", "end my life", "suicide", "want to die", "don't want to live",
+  "cut myself", "self harm", "self-harm", "hurting myself", "no reason to live",
+  "everyone would be better without me", "i want to disappear forever",
+];
+
+// Split the AI's ### Section\n... output into a { key: body } map
+const parseSections = (text) => {
+  const result = {};
+  const parts = text.split(/^###\s+/m);
+  for (const part of parts) {
+    if (!part.trim()) continue;
+    const newlineIdx = part.indexOf("\n");
+    if (newlineIdx === -1) continue;
+    const heading = part.slice(0, newlineIdx).trim();
+    const body = part.slice(newlineIdx + 1).trim();
+    const key = heading
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    result[key] = body;
+  }
+  return result;
+};
+
 router.get("/soulway-ai-report/:userId", async (req, res) => {
   try {
-    const entries = await Souljar.find({ userId: req.params.userId })
+    const { userId } = req.params;
+    const { userName = "Friend", forceRefresh } = req.query;
+
+    // ── 1. Return MongoDB-cached report if fresh (< 7 days) ──────────────────
+    if (forceRefresh !== "true") {
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      const cached = await SoulwayReport.findOne({
+        userId,
+        generatedAt: { $gte: sevenDaysAgo },
+      }).sort({ generatedAt: -1 });
+
+      if (cached) {
+        return res.json({
+          success: true,
+          cached: true,
+          crisisDetected: cached.crisisDetected,
+          crisisMessage: cached.crisisMessage || null,
+          entryCount: cached.entryCount,
+          collectionPeriod: cached.collectionPeriod,
+          generatedAt: cached.generatedAt,
+          sections: cached.sections,
+          rawReport: cached.rawReport,
+        });
+      }
+    }
+
+    // ── 2. Fetch up to 60 most recent entries ─────────────────────────────────
+    const entries = await Souljar.find({ userId })
       .sort({ createdAt: -1 })
       .limit(60);
 
@@ -721,26 +774,56 @@ router.get("/soulway-ai-report/:userId", async (req, res) => {
       });
     }
 
+    // ── 3. Collection period metadata ─────────────────────────────────────────
+    const newest = entries[0];
+    const oldest = entries[entries.length - 1];
+    const collectionPeriod = { from: oldest.createdAt, to: newest.createdAt };
+    const fromDate = oldest.createdAt.toISOString().split("T")[0];
+    const toDate = newest.createdAt.toISOString().split("T")[0];
+    const periodLabel = fromDate === toDate ? fromDate : `${fromDate} to ${toDate}`;
+
+    // ── 4. Pre-screen for crisis keywords (fast client-side gate) ─────────────
+    const allText = entries
+      .map((e) => (e.text || e.ocrText || "").toLowerCase())
+      .join(" ");
+    const crisisPreDetected = CRISIS_KEYWORDS.some((kw) => allText.includes(kw));
+
+    // ── 5. Format entries for the prompt ─────────────────────────────────────
     const entriesText = entries
       .map((e, i) => {
-        const parts = [];
-        const dateStr = e.stamp || (e.createdAt ? e.createdAt.toISOString().split("T")[0] : "unknown");
-        parts.push(`Date: ${dateStr}`);
-        if (e.topic) parts.push(`Category: ${e.topic}`);
-        if (e.mood) parts.push(`Mood: ${e.mood}`);
-        if (e.activity) parts.push(`Activity/Trigger: ${e.activity}`);
-        if (e.wordCount) parts.push(`Words written: ${e.wordCount}`);
-        const entryText = (e.text || e.ocrText || "").substring(0, 600);
-        if (entryText) parts.push(`Entry: ${entryText}`);
-        return `[Entry ${i + 1}]\n${parts.join("\n")}`;
+        const date = e.createdAt;
+        const dateStr = e.stamp || date.toISOString().split("T")[0];
+        const dayOfWeek = DAYS_OF_WEEK[date.getDay()];
+        const hh = String(date.getHours()).padStart(2, "0");
+        const mm = String(date.getMinutes()).padStart(2, "0");
+        const lines = [
+          `[Entry ${i + 1}]`,
+          `Timestamp: ${dateStr} ${hh}:${mm} (${dayOfWeek})`,
+        ];
+        if (e.topic)    lines.push(`Context: ${e.topic}`);
+        if (e.mood)     lines.push(`Mood: ${e.mood}`);
+        if (e.activity) lines.push(`Activity/Trigger: ${e.activity}`);
+        if (e.wordCount) lines.push(`Words written: ${e.wordCount}`);
+        const body = (e.text || e.ocrText || "").substring(0, 500);
+        if (body) lines.push(`Entry: ${body}`);
+        return lines.join("\n");
       })
       .join("\n\n---\n\n");
 
+    const userMessage = [
+      `User name: ${userName}`,
+      `Collection period: ${periodLabel}`,
+      `Total entries: ${entries.length}`,
+      "",
+      "Journal entries:",
+      "",
+      entriesText,
+    ].join("\n");
+
+    // ── 6. Call Claude ────────────────────────────────────────────────────────
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-    const userMessage = `Here are the user's Souljar entries (${entries.length} total entries across their emotional journey):\n\n${entriesText}\n\nNow silently answer: Who is this person becoming? What emotional struggle appears most often? What are they avoiding? What do they secretly need? What emotional strength exists inside them?\n\nThen generate the complete Soulway Report as a JSON object following the structure in your instructions. Be deeply personal, compassionate, and insightful. Return ONLY the JSON object.`;
-
-    const message = await anthropic.messages.create({
+    const aiMessage = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 4096,
       system: [
@@ -753,23 +836,61 @@ router.get("/soulway-ai-report/:userId", async (req, res) => {
       messages: [{ role: "user", content: userMessage }],
     });
 
-    const rawText = message.content[0].text.trim();
-    // Strip any accidental markdown fences
-    const jsonText = rawText.replace(/^```(?:json)?\n?/i, "").replace(/\n?```$/i, "");
+    const rawReport = aiMessage.content[0].text.trim();
 
-    let report;
-    try {
-      report = JSON.parse(jsonText);
-    } catch (_parseErr) {
-      console.error("Soulway AI JSON parse failed:", jsonText.slice(0, 300));
-      return res.status(500).json({ message: "AI returned invalid JSON. Please try again." });
+    // ── 7. Crisis detection in AI response ───────────────────────────────────
+    const crisisDetected = crisisPreDetected || rawReport.startsWith("CRISIS_DETECTED:");
+
+    if (crisisDetected) {
+      const crisisMessage = rawReport.startsWith("CRISIS_DETECTED:")
+        ? rawReport.replace(/^CRISIS_DETECTED:\s*/i, "").trim()
+        : rawReport;
+
+      const saved = await SoulwayReport.create({
+        userId,
+        entryCount: entries.length,
+        collectionPeriod,
+        crisisDetected: true,
+        crisisMessage,
+        sections: {},
+        rawReport: crisisMessage,
+      });
+
+      return res.json({
+        success: true,
+        cached: false,
+        crisisDetected: true,
+        crisisMessage,
+        entryCount: entries.length,
+        collectionPeriod,
+        generatedAt: saved.generatedAt,
+        sections: null,
+        rawReport: crisisMessage,
+      });
     }
 
-    res.json({
-      success: true,
+    // ── 8. Parse text sections and persist ───────────────────────────────────
+    const sections = parseSections(rawReport);
+
+    const saved = await SoulwayReport.create({
+      userId,
       entryCount: entries.length,
-      generatedAt: new Date().toISOString(),
-      report,
+      collectionPeriod,
+      crisisDetected: false,
+      sections,
+      rawReport,
+    });
+
+    return res.json({
+      success: true,
+      cached: false,
+      crisisDetected: false,
+      crisisMessage: null,
+      entryCount: entries.length,
+      collectionPeriod,
+      generatedAt: saved.generatedAt,
+      sections,
+      rawReport,
     });
   } catch (error) {
     console.error("Soulway AI Report Error:", error);
