@@ -636,6 +636,15 @@ router.get("/period-report/:userId", async (req, res) => {
     const totalEntries = entries.length;
     const totalWords = entries.reduce((sum, e) => sum + (e.wordCount || 0), 0);
 
+    const moodDistribution = {};
+    const activityDistribution = {};
+    const topicDistribution = {};
+    entries.forEach((e) => {
+      if (e.mood)     moodDistribution[e.mood]       = (moodDistribution[e.mood]       || 0) + 1;
+      if (e.activity) activityDistribution[e.activity] = (activityDistribution[e.activity] || 0) + 1;
+      if (e.topic)    topicDistribution[e.topic]      = (topicDistribution[e.topic]      || 0) + 1;
+    });
+
     const currentWindow = (() => {
       if (period !== "daily") return null;
       const h = nowLocal.getHours();
@@ -656,6 +665,9 @@ router.get("/period-report/:userId", async (req, res) => {
       currentWindow,
       totalEntries,
       totalWords,
+      moodDistribution,
+      activityDistribution,
+      topicDistribution,
       slots,
     });
   } catch (error) {
