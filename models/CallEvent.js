@@ -22,7 +22,7 @@ const callEventSchema = new mongoose.Schema(
     notifiedAt: { type: Date, default: null, index: true },
     seenAt: { type: Date, default: null },
     agoraChannel: { type: String, default: null },
-    jitsiRoom: { type: String, default: null },
+    livekitRoom: { type: String, default: null },
   },
   { timestamps: true }
 );

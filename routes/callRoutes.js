@@ -6,7 +6,7 @@ import {
   getCallHistoryForRoom,
   markCallsSeen,
 } from "../services/callEventService.js";
-import { generateJitsiToken, buildJitsiServerUrl } from "../services/jitsiService.js";
+import { generateLiveKitToken, getLiveKitUrl } from "../services/livekitService.js";
 
 const router = express.Router();
 
@@ -80,10 +80,10 @@ router.patch("/seen/bulk", async (req, res) => {
   }
 });
 
-// ── GET /api/calls/jitsi-token  — generate a Jitsi JWT for the calling user ──
-// Query: ?room=jitsiRoomName&userId=uid&userName=Display+Name
-// Returns: { token, serverUrl } — Flutter passes token to JitsiMeetConferenceOptions
-router.get("/jitsi-token", async (req, res) => {
+// ── GET /api/calls/livekit-token  — generate a LiveKit access token ──────────
+// Query: ?room=livekitRoomName&userId=uid&userName=Display+Name
+// Returns: { token, livekitUrl } — Flutter passes these to Room.connect()
+router.get("/livekit-token", async (req, res) => {
   try {
     const { room, userId, userName } = req.query;
 
@@ -91,16 +91,24 @@ router.get("/jitsi-token", async (req, res) => {
       return res.status(400).json({ message: "room and userId are required" });
     }
 
-    const token = generateJitsiToken({
-      userId,
-      userName: userName || userId,
+    const livekitUrl = getLiveKitUrl();
+    if (!livekitUrl) {
+      return res.status(503).json({ message: "LiveKit server not configured (LIVEKIT_URL missing)" });
+    }
+
+    const token = generateLiveKitToken({
       roomName: room,
-      isModerator: true,
+      participantIdentity: userId,
+      participantName: userName || userId,
     });
+
+    if (!token) {
+      return res.status(503).json({ message: "LiveKit credentials not configured (LIVEKIT_API_KEY/SECRET missing)" });
+    }
 
     res.json({
       token,
-      serverUrl: buildJitsiServerUrl(),
+      livekitUrl,
       room,
       expiresInSeconds: 7200,
     });

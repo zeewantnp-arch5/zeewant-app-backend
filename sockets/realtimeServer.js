@@ -25,7 +25,7 @@ import {
   markMissedCallsNotified,
   buildCallEventText,
 } from "../services/callEventService.js";
-import { generateJitsiToken, buildJitsiServerUrl } from "../services/jitsiService.js";
+import { generateLiveKitToken, getLiveKitUrl } from "../services/livekitService.js";
 
 function emitSocketError(socket, message, details = {}) {
   socket.emit("socket_error", { message, ...details });
@@ -833,12 +833,11 @@ export function registerRealtimeServer(io) {
       socket.to(roomId).emit("call_rejected", { rejectedBy: socket.data.userId });
     });
 
-    // ── Jitsi Call Lifecycle ───────────────────────────────────────────────────
-    // Emitted by caller when they tap the call button and peer is online.
-    // Backend creates a CallEvent, checks actual online state, generates Jitsi
-    // JWT tokens for both parties (bypasses lobby), then routes call_incoming
-    // to the receiver's personal room.
-    socket.on("call_initiate", async ({ to, roomId, callerName, callerImage, isVideo, jitsiRoom }) => {
+    // ── LiveKit Call Lifecycle ─────────────────────────────────────────────────
+    // Emitted by caller when they tap the call button and the peer is online.
+    // Backend creates a CallEvent, checks actual online state, generates LiveKit
+    // access tokens for both parties, then routes call_incoming to the receiver.
+    socket.on("call_initiate", async ({ to, roomId, callerName, callerImage, isVideo, livekitRoom }) => {
       const callerId = socket.data.userId;
       const callerRole = socket.data.role;
 
@@ -855,7 +854,7 @@ export function registerRealtimeServer(io) {
       const isReceiverOnline = isUserOnline(receiverRegistry, to);
       const normalizedCallType = isVideo ? "video" : "audio";
       const resolvedCallerName = callerName || socket.data.userName || callerId;
-      const jitsiServerUrl = buildJitsiServerUrl();
+      const livekitUrl = getLiveKitUrl();
 
       console.log(
         `📞 call_initiate: ${resolvedCallerName}(${callerId}) → ${to} ` +
@@ -872,7 +871,7 @@ export function registerRealtimeServer(io) {
           receiverRole,
           callType: normalizedCallType,
           status: isReceiverOnline ? "incoming" : "missed",
-          jitsiRoom: jitsiRoom || null,
+          livekitRoom: livekitRoom || null,
         });
 
         const callEventId = String(callEvent._id);
@@ -891,7 +890,7 @@ export function registerRealtimeServer(io) {
               callerName: String(resolvedCallerName),
               callerImage: String(callerImage || ""),
               callType: normalizedCallType,
-              jitsiRoom: String(jitsiRoom || ""),
+              livekitRoom: String(livekitRoom || ""),
               callEventId,
               missed: "true",
             },
@@ -909,19 +908,17 @@ export function registerRealtimeServer(io) {
           });
         }
 
-        // Generate JWT tokens — moderator:true means both parties skip the lobby
-        const callerToken = generateJitsiToken({
-          userId: callerId,
-          userName: resolvedCallerName,
-          roomName: jitsiRoom,
-          isModerator: true,
+        // Generate LiveKit access tokens for both parties
+        const callerToken = generateLiveKitToken({
+          roomName: livekitRoom,
+          participantIdentity: callerId,
+          participantName: resolvedCallerName,
         });
 
-        const receiverToken = generateJitsiToken({
-          userId: to,
-          userName: null, // receiver name unknown here; Flutter fills displayName separately
-          roomName: jitsiRoom,
-          isModerator: true,
+        const receiverToken = generateLiveKitToken({
+          roomName: livekitRoom,
+          participantIdentity: to,
+          participantName: null,
         });
 
         const personalRoom = buildPersonalRoom(receiverRole, to);
@@ -932,9 +929,9 @@ export function registerRealtimeServer(io) {
           callerImage: callerImage || null,
           callerRole,
           isVideo,
-          jitsiRoom,
-          jitsiServerUrl,
-          jitsiToken: receiverToken,   // receiver uses this when joining
+          livekitRoom,
+          livekitUrl,
+          livekitToken: receiverToken,
           callEventId,
         });
 
@@ -942,8 +939,8 @@ export function registerRealtimeServer(io) {
 
         socket.emit("call_initiated", {
           callEventId,
-          jitsiToken: callerToken,     // caller uses this when joining
-          jitsiServerUrl,
+          livekitToken: callerToken,
+          livekitUrl,
         });
       } catch (err) {
         console.error(`[call_initiate] error: ${err.message}`);
@@ -952,11 +949,11 @@ export function registerRealtimeServer(io) {
     });
 
     // Emitted by the receiver when they tap Accept in the incoming call dialog.
-    socket.on("call_accepted", async ({ to, jitsiRoom, callEventId }) => {
+    socket.on("call_accepted", async ({ to, livekitRoom, callEventId }) => {
       const receiverRole = socket.data.role;
       const callerRole = receiverRole === "student" ? "soultee" : "student";
       const receiverId = socket.data.userId;
-      console.log(`✅ call_accepted: receiver=${receiverId} → caller=${to} room=${jitsiRoom}`);
+      console.log(`✅ call_accepted: receiver=${receiverId} → caller=${to} room=${livekitRoom}`);
 
       try {
         if (callEventId) await markCallAccepted(callEventId);
@@ -966,7 +963,7 @@ export function registerRealtimeServer(io) {
         const targetRoom = buildPersonalRoom(callerRole, to);
         io.to(targetRoom).emit("call_accepted", {
           from: receiverId,
-          jitsiRoom,
+          livekitRoom,
           callEventId,
         });
         console.log(`📤 call_accepted relayed to room="${targetRoom}"`);
@@ -976,17 +973,17 @@ export function registerRealtimeServer(io) {
       io.to(buildPersonalRoom(callerRole, to)).emit("call_state_changed", {
         state: "in_progress",
         callEventId,
-        jitsiRoom,
+        livekitRoom,
       });
       socket.emit("call_state_changed", {
         state: "in_progress",
         callEventId,
-        jitsiRoom,
+        livekitRoom,
       });
     });
 
     // Emitted by the receiver when they tap Decline.
-    socket.on("call_rejected", async ({ to, jitsiRoom, callEventId }) => {
+    socket.on("call_rejected", async ({ to, livekitRoom, callEventId }) => {
       const receiverRole = socket.data.role;
       const callerRole = receiverRole === "student" ? "soultee" : "student";
       console.log(`❌ call_rejected: receiver=${socket.data.userId} → caller=${to}`);
@@ -998,7 +995,7 @@ export function registerRealtimeServer(io) {
       if (to) {
         io.to(buildPersonalRoom(callerRole, to)).emit("call_rejected", {
           from: socket.data.userId,
-          jitsiRoom,
+          livekitRoom,
           callEventId,
         });
         io.to(buildPersonalRoom(callerRole, to)).emit("call_state_changed", {
@@ -1009,7 +1006,7 @@ export function registerRealtimeServer(io) {
     });
 
     // Emitted by the caller when they cancel from CallingScreen (or 30 s timeout).
-    socket.on("call_cancelled", async ({ to, jitsiRoom, callEventId }) => {
+    socket.on("call_cancelled", async ({ to, livekitRoom, callEventId }) => {
       const callerRole = socket.data.role;
       const receiverRole = callerRole === "student" ? "soultee" : "student";
       console.log(`🚫 call_cancelled: caller=${socket.data.userId} → receiver=${to}`);
@@ -1021,7 +1018,7 @@ export function registerRealtimeServer(io) {
       if (to) {
         io.to(buildPersonalRoom(receiverRole, to)).emit("call_cancelled", {
           from: socket.data.userId,
-          jitsiRoom,
+          livekitRoom,
         });
         io.to(buildPersonalRoom(receiverRole, to)).emit("call_state_changed", {
           state: "cancelled",

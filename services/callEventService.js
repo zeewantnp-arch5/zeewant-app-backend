@@ -9,7 +9,7 @@ export async function createCallEvent({
   receiverRole,
   callType = "audio",
   status = "incoming",
-  jitsiRoom = null,
+  livekitRoom = null,
   agoraChannel = null,
 }) {
   return CallEvent.create({
@@ -22,7 +22,7 @@ export async function createCallEvent({
     callType: callType === "video" ? "video" : "audio",
     status,
     initiatedAt: new Date(),
-    jitsiRoom: jitsiRoom || null,
+    livekitRoom: livekitRoom || null,
     agoraChannel: agoraChannel || null,
   });
 }
