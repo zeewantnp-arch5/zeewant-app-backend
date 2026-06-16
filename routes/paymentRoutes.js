@@ -454,8 +454,8 @@ router.post("/esewa/sdk-verify", async (req, res) => {
       return res.status(400).json({ message: "productId and refId are required" });
     }
 
-    // Choose base URL: test if ESEWA_BASE_URL contains 'rc-epay', live otherwise
-    const isTest = !(process.env.ESEWA_BASE_URL || "").includes("epay.esewa.com.np");
+    // "rc-epay" is present only in the test URL; the live URL is just "epay.esewa.com.np"
+    const isTest = (process.env.ESEWA_BASE_URL || "").includes("rc-epay");
     const verifyBase = isTest ? "https://rc.esewa.com.np" : "https://esewa.com.np";
 
     // Method 1: verify by refId (referenceId from SDK success result)
@@ -621,7 +621,7 @@ router.post("/esewa/recover", async (req, res) => {
     }
 
     // Verify with eSewa using Method 2: productId + amount
-    const isTest = !(process.env.ESEWA_BASE_URL || "").includes("epay.esewa.com.np");
+    const isTest = (process.env.ESEWA_BASE_URL || "").includes("rc-epay");
     const verifyBase = isTest ? "https://rc.esewa.com.np" : "https://esewa.com.np";
     const url = `${verifyBase}/mobile/transaction?productId=${encodeURIComponent(transactionUuid)}&amount=${payment.amount}`;
 
