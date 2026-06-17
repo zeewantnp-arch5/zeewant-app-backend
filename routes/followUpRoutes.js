@@ -23,6 +23,25 @@ function normalizeEmail(value) {
 }
 
 async function resolveStudentEmail(studentUid) {
+  // 1. Firebase Auth — covers email/password and Google sign-in
+  try {
+    const user = await admin.auth().getUser(studentUid);
+    if (user.email) return normalizeEmail(user.email);
+  } catch (_) {}
+
+  // 2. Firestore users collection — matches Flutter's _resolveUserEmail logic
+  try {
+    const doc = await admin.firestore().collection("users").doc(studentUid).get();
+    if (doc.exists) {
+      const data = doc.data() ?? {};
+      for (const key of ["email", "userEmail", "contactEmail"]) {
+        const v = normalizeEmail(data[key]);
+        if (v) return v;
+      }
+    }
+  } catch (_) {}
+
+  // 3. Most recent OTP record (repeat requests where email was already supplied)
   const recentOtp = await FollowUpOtp.findOne({ studentFirebaseUid: studentUid })
     .sort({ createdAt: -1 })
     .select("studentEmail")
