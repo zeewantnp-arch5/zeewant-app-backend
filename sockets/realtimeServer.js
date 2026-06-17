@@ -908,18 +908,27 @@ export function registerRealtimeServer(io) {
           });
         }
 
-        // Generate LiveKit access tokens for both parties
-        const callerToken = generateLiveKitToken({
-          roomName: livekitRoom,
-          participantIdentity: callerId,
-          participantName: resolvedCallerName,
-        });
+        // Generate LiveKit access tokens for both parties.
+        // generateLiveKitToken is async in livekit-server-sdk v2.x — must be awaited.
+        const [callerToken, receiverToken] = await Promise.all([
+          generateLiveKitToken({
+            roomName: livekitRoom,
+            participantIdentity: callerId,
+            participantName: resolvedCallerName,
+          }),
+          generateLiveKitToken({
+            roomName: livekitRoom,
+            participantIdentity: to,
+            participantName: null,
+          }),
+        ]);
 
-        const receiverToken = generateLiveKitToken({
-          roomName: livekitRoom,
-          participantIdentity: to,
-          participantName: null,
-        });
+        if (!callerToken || !receiverToken) {
+          console.error("[call_initiate] token generation failed — check LIVEKIT_API_KEY/LIVEKIT_API_SECRET env vars");
+          return emitSocketError(socket, "Call server not configured. Contact support.", { roomId });
+        }
+
+        console.log(`[call_initiate] tokens generated callerToken.length=${callerToken.length} receiverToken.length=${receiverToken.length}`);
 
         const personalRoom = buildPersonalRoom(receiverRole, to);
         io.to(personalRoom).emit("call_incoming", {
@@ -935,7 +944,7 @@ export function registerRealtimeServer(io) {
           callEventId,
         });
 
-        console.log(`📲 call_incoming sent to room="${personalRoom}" callEventId=${callEvent._id}`);
+        console.log(`📲 call_incoming sent to room="${personalRoom}" callEventId=${callEvent._id} livekitUrl=${livekitUrl}`);
 
         socket.emit("call_initiated", {
           callEventId,

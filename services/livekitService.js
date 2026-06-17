@@ -9,8 +9,11 @@ import { AccessToken } from "livekit-server-sdk";
  *   LIVEKIT_URL        — wss:// URL of your LiveKit server (e.g. wss://your-server.livekit.cloud)
  *
  * Returns null when env vars are absent so callers can surface a clear error.
+ *
+ * NOTE: livekit-server-sdk v2.x makes AccessToken.toJwt() async (Promise<string>).
+ * This function MUST be awaited by callers.
  */
-export function generateLiveKitToken({
+export async function generateLiveKitToken({
   roomName,
   participantIdentity,
   participantName,
@@ -20,6 +23,12 @@ export function generateLiveKitToken({
   const apiSecret = process.env.LIVEKIT_API_SECRET;
 
   if (!apiKey || !apiSecret) {
+    console.error("[LiveKit] LIVEKIT_API_KEY or LIVEKIT_API_SECRET not set in env");
+    return null;
+  }
+
+  if (!roomName || !participantIdentity) {
+    console.error("[LiveKit] generateLiveKitToken: roomName and participantIdentity are required");
     return null;
   }
 
@@ -36,7 +45,10 @@ export function generateLiveKitToken({
     canSubscribe: true,
   });
 
-  return at.toJwt();
+  // toJwt() returns Promise<string> in livekit-server-sdk v2.x — must be awaited
+  const token = await at.toJwt();
+  console.log(`[LiveKit] token generated for participant=${participantIdentity} room=${roomName}`);
+  return token;
 }
 
 export function getLiveKitUrl() {
