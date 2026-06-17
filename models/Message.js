@@ -27,6 +27,13 @@ const messageSchema = new mongoose.Schema(
     },
     deliveredAt: { type: Date, default: null },
     readAt: { type: Date, default: null },
+    // ── Soft deletion ─────────────────────────────────────────────────────────
+    isDeleted: { type: Boolean, default: false },
+    deletedForEveryone: { type: Boolean, default: false },
+    deletedBy: { type: String, default: null },
+    deletedAt: { type: Date, default: null },
+    // UIDs who deleted this message for themselves only ("Delete for Me")
+    deletedForUsers: { type: [String], default: [] },
   },
   { timestamps: true }
 );

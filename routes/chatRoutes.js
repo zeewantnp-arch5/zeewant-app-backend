@@ -17,6 +17,9 @@ import {
   markRoomMessagesDelivered,
   serializeMessage,
   getRoomMessageMetadata,
+  deleteMessageForMe,
+  deleteMessageForEveryone,
+  bulkDeleteMessages,
 } from "../services/messageService.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import Message from "../models/Message.js";
@@ -130,7 +133,7 @@ export default function createChatRoutes(io) {
       }
 
       const messages = await Message
-        .find({ roomId: req.params.roomId })
+        .find({ roomId: req.params.roomId, deletedForUsers: { $nin: [userId] } })
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
@@ -529,6 +532,112 @@ export default function createChatRoutes(io) {
       });
 
       res.json({ requests: enrichedRequests, total: enrichedRequests.length });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ─── DELETE /api/chat/:roomId/messages/:messageId — single delete ───────────
+  router.delete("/:roomId/messages/:messageId", async (req, res) => {
+    try {
+      const { userId, userRole, deleteFor } = req.body;
+      const { roomId, messageId } = req.params;
+
+      if (!userId || !userRole) {
+        return res.status(400).json({ message: "userId and userRole are required" });
+      }
+
+      const link = await getRoomLinkForParticipant({
+        roomId,
+        userId,
+        userRole,
+        allowPending: true,
+        allowEnded: true,
+      });
+      if (!link) return res.status(403).json({ message: "Room access denied" });
+
+      const studentUid  = link.studentFirebaseUid;
+      const soulteeUid  = link.soulteeFirebaseUid;
+      const otherUid    = userId === studentUid ? soulteeUid : studentUid;
+      const otherRole   = userId === studentUid ? "soultee"  : "student";
+
+      let message;
+      if (deleteFor === "everyone") {
+        message = await deleteMessageForEveryone({ messageId, userId });
+        if (!message) {
+          return res.status(403).json({ message: "Only the message sender can delete for everyone" });
+        }
+        const payload = {
+          messageId,
+          roomId,
+          deletedForEveryone: true,
+          deletedBy: userId,
+          deletedAt: message.deletedAt,
+        };
+        io.to(roomId).emit("message_deleted", payload);
+        io.to(`${otherRole}:${otherUid}`).emit("message_deleted", payload);
+      } else {
+        message = await deleteMessageForMe({ messageId, userId });
+        if (!message) return res.status(404).json({ message: "Message not found" });
+        // Only the requester needs to update their UI
+        io.to(`${userRole}:${userId}`).emit("message_deleted", {
+          messageId,
+          roomId,
+          deletedForEveryone: false,
+        });
+      }
+
+      res.json({ message: serializeMessage(message) });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ─── DELETE /api/chat/:roomId/messages — bulk delete ────────────────────────
+  router.delete("/:roomId/messages", async (req, res) => {
+    try {
+      const { userId, userRole, messageIds, deleteFor } = req.body;
+      const { roomId } = req.params;
+
+      if (!userId || !userRole || !Array.isArray(messageIds) || messageIds.length === 0) {
+        return res.status(400).json({ message: "userId, userRole, and messageIds[] are required" });
+      }
+
+      const link = await getRoomLinkForParticipant({
+        roomId,
+        userId,
+        userRole,
+        allowPending: true,
+        allowEnded: true,
+      });
+      if (!link) return res.status(403).json({ message: "Room access denied" });
+
+      const studentUid = link.studentFirebaseUid;
+      const soulteeUid = link.soulteeFirebaseUid;
+      const otherUid   = userId === studentUid ? soulteeUid : studentUid;
+      const otherRole  = userId === studentUid ? "soultee"  : "student";
+
+      const { deletedCount, affectedIds } = await bulkDeleteMessages({ messageIds, userId, deleteFor });
+
+      if (deleteFor === "everyone") {
+        const payload = {
+          messageIds: affectedIds,
+          roomId,
+          deletedForEveryone: true,
+          deletedBy: userId,
+          deletedAt: new Date(),
+        };
+        io.to(roomId).emit("bulk_messages_deleted", payload);
+        io.to(`${otherRole}:${otherUid}`).emit("bulk_messages_deleted", payload);
+      } else {
+        io.to(`${userRole}:${userId}`).emit("bulk_messages_deleted", {
+          messageIds: affectedIds,
+          roomId,
+          deletedForEveryone: false,
+        });
+      }
+
+      res.json({ deletedCount, affectedIds });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }

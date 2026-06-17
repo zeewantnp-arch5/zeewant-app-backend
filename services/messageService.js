@@ -9,6 +9,7 @@ function allowedStatuses(allowPending, allowEnded) {
 }
 
 export function serializeMessage(message) {
+  const deletedForEveryone = message.deletedForEveryone === true;
   return {
     _id: message._id,
     roomId: message.roomId,
@@ -17,18 +18,22 @@ export function serializeMessage(message) {
     senderRole: message.senderRole,
     recipientUid: message.recipientUid,
     recipientRole: message.recipientRole,
-    text: message.text,
+    text: deletedForEveryone ? "This message was deleted" : (message.text ?? ""),
     type: message.type,
     callType: message.callType || null,
-    attachmentUrl: message.attachmentUrl || null,
-    attachmentName: message.attachmentName || null,
-    attachmentMimeType: message.attachmentMimeType || null,
-    attachmentSize: message.attachmentSize || null,
+    attachmentUrl: deletedForEveryone ? null : (message.attachmentUrl || null),
+    attachmentName: deletedForEveryone ? null : (message.attachmentName || null),
+    attachmentMimeType: deletedForEveryone ? null : (message.attachmentMimeType || null),
+    attachmentSize: deletedForEveryone ? null : (message.attachmentSize || null),
     status: message.status || "sent",
     deliveredAt: message.deliveredAt || null,
     readAt: message.readAt || null,
     createdAt: message.createdAt,
     updatedAt: message.updatedAt,
+    isDeleted: message.isDeleted || false,
+    deletedForEveryone,
+    deletedBy: message.deletedBy || null,
+    deletedAt: message.deletedAt || null,
   };
 }
 
@@ -145,6 +150,7 @@ export async function getUnreadMessageSummary({ userId, userRole }) {
         recipientUid: userId,
         recipientRole: userRole,
         readAt: null,
+        deletedForUsers: { $nin: [userId] },
       },
     },
     {
@@ -207,6 +213,7 @@ export async function getRoomMessageMetadata({
               recipientUid,
               recipientRole,
               readAt: null,
+              deletedForUsers: { $nin: [recipientUid] },
             },
           },
           {
@@ -300,4 +307,74 @@ export async function markRoomMessagesDelivered({ roomId, recipientUid, recipien
   );
 
   return result.modifiedCount || 0;
+}
+
+// ──── Message Deletion ────────────────────────────────────────────────────────
+
+export async function deleteMessageForMe({ messageId, userId }) {
+  if (!messageId || !userId) return null;
+  return Message.findByIdAndUpdate(
+    messageId,
+    { $addToSet: { deletedForUsers: userId } },
+    { new: true }
+  );
+}
+
+export async function deleteMessageForEveryone({ messageId, userId }) {
+  if (!messageId || !userId) return null;
+  return Message.findOneAndUpdate(
+    { _id: messageId, senderId: userId },
+    {
+      $set: {
+        isDeleted: true,
+        deletedForEveryone: true,
+        deletedBy: userId,
+        deletedAt: new Date(),
+        text: "This message was deleted",
+        attachmentUrl: null,
+        attachmentName: null,
+        attachmentMimeType: null,
+        attachmentSize: null,
+      },
+    },
+    { new: true }
+  );
+}
+
+export async function bulkDeleteMessages({ messageIds, userId, deleteFor }) {
+  if (!messageIds?.length || !userId) return { deletedCount: 0, affectedIds: [] };
+
+  const now = new Date();
+  let result;
+
+  if (deleteFor === "everyone") {
+    result = await Message.updateMany(
+      { _id: { $in: messageIds }, senderId: userId },
+      {
+        $set: {
+          isDeleted: true,
+          deletedForEveryone: true,
+          deletedBy: userId,
+          deletedAt: now,
+          text: "This message was deleted",
+          attachmentUrl: null,
+          attachmentName: null,
+          attachmentMimeType: null,
+          attachmentSize: null,
+        },
+      }
+    );
+    // Return only the IDs that were actually owned by this user and updated
+    const updated = await Message.find(
+      { _id: { $in: messageIds }, senderId: userId },
+      "_id"
+    ).lean();
+    return { deletedCount: result.modifiedCount, affectedIds: updated.map(m => String(m._id)) };
+  } else {
+    result = await Message.updateMany(
+      { _id: { $in: messageIds } },
+      { $addToSet: { deletedForUsers: userId } }
+    );
+    return { deletedCount: result.modifiedCount, affectedIds: messageIds.map(String) };
+  }
 }
