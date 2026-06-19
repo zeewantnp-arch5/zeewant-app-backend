@@ -384,145 +384,63 @@ router.get("/forgot-password-debug", (req, res) => {
   });
 });
 
-// ─── POST /api/admin/forgot-password ─────────────────────────────────────────
-// Generates a 6-digit OTP, saves it, and emails it to the admin's Gmail.
-// The code is NOT returned in the response to prevent enumeration.
+// ─── POST /api/admin/forgot-password ───────────────────────────────────────────
+// Flow: send email FIRST → if success, save token → return 200
+//       if email fails → return 500 with real error (no silent failure)
 router.post("/forgot-password", async (req, res) => {
   const reqId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const startedAt = Date.now();
   const { email } = req.body;
-  upsertForgotPasswordTrace(reqId, {
-    maskedEmail: maskEmail(email),
-    stage: "received",
-    startedAt,
-    updatedAt: Date.now(),
-  });
+
+  upsertForgotPasswordTrace(reqId, { maskedEmail: maskEmail(email), stage: "received", startedAt, updatedAt: Date.now() });
 
   if (!email) {
-    console.warn(`[Admin Reset][${reqId}] missing email in request body`);
-    upsertForgotPasswordTrace(reqId, {
-      stage: "rejected-missing-email",
-      updatedAt: Date.now(),
-    });
     return res.status(400).json({ message: "Email is required" });
   }
 
   const normalizedEmail = email.trim().toLowerCase();
-  console.log(`[Admin Reset][${reqId}] request received for ${normalizedEmail}`);
+  console.log(`[Admin Reset][${reqId}] request for ${maskEmail(normalizedEmail)}`);
 
   try {
-    const adminUser = await AdminUser.findOne({
-      email: normalizedEmail,
-      isActive: true,
-    });
-    upsertForgotPasswordTrace(reqId, {
-      stage: "lookup-complete",
-      userFound: !!adminUser,
-      elapsedMs: Date.now() - startedAt,
-      updatedAt: Date.now(),
-    });
-    console.log(
-      `[Admin Reset][${reqId}] lookup complete in ${Date.now() - startedAt}ms (found=${!!adminUser})`
-    );
+    const adminUser = await AdminUser.findOne({ email: normalizedEmail, isActive: true });
+    upsertForgotPasswordTrace(reqId, { stage: "lookup-complete", userFound: !!adminUser, elapsedMs: Date.now() - startedAt, updatedAt: Date.now() });
 
-    // Always return 200 to avoid email enumeration
     if (!adminUser) {
-      console.log(`[Admin Reset][${reqId}] user not found, returning generic success`);
-      upsertForgotPasswordTrace(reqId, {
-        stage: "user-not-found",
-        elapsedMs: Date.now() - startedAt,
-        updatedAt: Date.now(),
-      });
-      return res.json({
-        message: "If that email is registered, a reset code has been sent to it.",
-      });
+      upsertForgotPasswordTrace(reqId, { stage: "user-not-found", updatedAt: Date.now() });
+      return res.json({ message: "If that email is registered, a reset code has been sent to it." });
     }
 
-    // Generate a 6-digit OTP, valid for 15 minutes
     const code = String(Math.floor(100000 + Math.random() * 900000));
+
+    // Step 1: Send email FIRST — if this fails, return error immediately (no silent failure)
+    upsertForgotPasswordTrace(reqId, { stage: "mail-send-started", elapsedMs: Date.now() - startedAt, updatedAt: Date.now() });
+    console.log(`[Admin Reset][${reqId}] sending email via nodemailer to ${maskEmail(normalizedEmail)}`);
+    try {
+      await sendResetCodeEmail(adminUser.email, code);
+    } catch (mailError) {
+      upsertForgotPasswordTrace(reqId, { stage: "mail-failed", mailErrorCode: mailError.code ?? null, mailErrorMessage: mailError.message, elapsedMs: Date.now() - startedAt, updatedAt: Date.now() });
+      console.error(`[Admin Reset][${reqId}] mail error:`, mailError.message, mailError.code ?? "");
+      return res.status(500).json({
+        message: `Email sending failed: ${mailError.message}. Ensure MAIL_USER and MAIL_PASS are set on Render.`,
+      });
+    }
+    upsertForgotPasswordTrace(reqId, { stage: "mail-sent", elapsedMs: Date.now() - startedAt, updatedAt: Date.now() });
+    console.log(`[Admin Reset][${reqId}] email sent in ${Date.now() - startedAt}ms`);
+
+    // Step 2: Email delivered — now save token (15 min expiry)
     adminUser.resetToken = code;
     adminUser.resetTokenExpiry = new Date(Date.now() + 15 * 60 * 1000);
     await adminUser.save();
-    upsertForgotPasswordTrace(reqId, {
-      stage: "token-saved",
-      elapsedMs: Date.now() - startedAt,
-      updatedAt: Date.now(),
-    });
-    console.log(
-      `[Admin Reset][${reqId}] token saved in ${Date.now() - startedAt}ms`
-    );
+    upsertForgotPasswordTrace(reqId, { stage: "token-saved", elapsedMs: Date.now() - startedAt, updatedAt: Date.now() });
 
-    res.json({
-      message: "A 6-digit reset code has been sent to your email. Check your inbox.",
-    });
-    upsertForgotPasswordTrace(reqId, {
-      stage: "response-sent",
-      elapsedMs: Date.now() - startedAt,
-      updatedAt: Date.now(),
-    });
-    console.log(
-      `[Admin Reset][${reqId}] HTTP response sent in ${Date.now() - startedAt}ms`
-    );
+    return res.json({ message: "A 6-digit reset code has been sent to your email. Check your inbox." });
 
-    // Send email in the background so slow SMTP/network does not block API response.
-    // On failure, clear token so an undelivered code cannot be used.
-    setImmediate(async () => {
-      try {
-        console.log(`[Admin Reset][${reqId}] async mail send started`);
-        upsertForgotPasswordTrace(reqId, {
-          stage: "mail-send-started",
-          elapsedMs: Date.now() - startedAt,
-          updatedAt: Date.now(),
-        });
-        await sendResetCodeEmail(adminUser.email, code);
-        upsertForgotPasswordTrace(reqId, {
-          stage: "mail-sent",
-          elapsedMs: Date.now() - startedAt,
-          updatedAt: Date.now(),
-        });
-        console.log(
-          `[Admin Reset][${reqId}] OTP sent to ${adminUser.email} in ${Date.now() - startedAt}ms total`
-        );
-      } catch (mailError) {
-        upsertForgotPasswordTrace(reqId, {
-          stage: "mail-failed",
-          mailErrorCode: mailError.code ?? null,
-          mailErrorMessage: mailError.message,
-          elapsedMs: Date.now() - startedAt,
-          updatedAt: Date.now(),
-        });
-        console.error(
-          `[Admin Reset][${reqId}] async mail error:`,
-          mailError.message,
-          mailError.code ?? ""
-        );
-        await AdminUser.updateOne(
-          { _id: adminUser._id, resetToken: code },
-          { $set: { resetToken: null, resetTokenExpiry: null } }
-        );
-        upsertForgotPasswordTrace(reqId, {
-          stage: "mail-failed-token-rolled-back",
-          elapsedMs: Date.now() - startedAt,
-          updatedAt: Date.now(),
-        });
-        console.warn(`[Admin Reset][${reqId}] token rolled back after mail failure`);
-      }
-    });
   } catch (error) {
-    upsertForgotPasswordTrace(reqId, {
-      stage: "request-failed",
-      errorCode: error.code ?? null,
-      errorMessage: error.message,
-      elapsedMs: Date.now() - startedAt,
-      updatedAt: Date.now(),
-    });
-    console.error(`[Admin Reset][${reqId}] Error:`, error.message, error.code ?? "");
-    res.status(500).json({
-      message: "Failed to send reset code. Please try again.",
-    });
+    upsertForgotPasswordTrace(reqId, { stage: "request-failed", errorCode: error.code ?? null, errorMessage: error.message, elapsedMs: Date.now() - startedAt, updatedAt: Date.now() });
+    console.error(`[Admin Reset][${reqId}] Error:`, error.message);
+    return res.status(500).json({ message: "Failed to send reset code. Please try again." });
   }
 });
-
 // ─── POST /api/admin/reset-password ──────────────────────────────────────────
 router.post("/reset-password", async (req, res) => {
   const { email, resetCode, newPassword } = req.body;
