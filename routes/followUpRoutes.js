@@ -321,6 +321,18 @@ export default function createFollowUpRoutes(io) {
         ).catch(() => {});
       }
 
+      // Send email FIRST — if it fails, return error immediately (no silent failure).
+      // OTP is only saved after email succeeds so the user never gets an expired OTP.
+      console.log(`[followUp] sending OTP email to ${resolvedStudentEmail} — room ${roomId}`);
+      try {
+        await sendFollowUpOtpEmail(resolvedStudentEmail, otp, durationMinutes);
+      } catch (mailErr) {
+        console.error(`[followUp] email failed for room ${roomId}:`, mailErr.message);
+        return res.status(500).json({
+          message: `Failed to send OTP email: ${mailErr.message}. Please check email configuration.`,
+        });
+      }
+
       const otpRecord = await FollowUpOtp.create({
         otp,
         roomId,
@@ -333,27 +345,15 @@ export default function createFollowUpRoutes(io) {
         verificationMethod: "email",
       });
 
-      console.log(`[followUp] OTP generated for room ${roomId} → ${otp} (to: ${resolvedStudentEmail})`);
+      console.log(`[followUp] OTP saved & email sent for room ${roomId} → (to: ${resolvedStudentEmail})`);
 
-      // Respond immediately so the app is not blocked by SMTP latency
+      io.to(`student:${resolvedStudentUid}`).emit("otp_sent", { roomId, method: "email" });
+
       res.json({
         success: true,
         message: "Verification code sent to your email",
         sentTo:  resolvedStudentEmail,
         method:  "email",
-      });
-
-      io.to(`student:${resolvedStudentUid}`).emit("otp_sent", { roomId, method: "email" });
-
-      // Send email in the background — if it fails, roll back the OTP record
-      setImmediate(async () => {
-        try {
-          await sendFollowUpOtpEmail(resolvedStudentEmail, otp, durationMinutes);
-          console.log(`[followUp] OTP email sent to ${resolvedStudentEmail} — room ${roomId}`);
-        } catch (mailErr) {
-          console.error(`[followUp] email failed for room ${roomId}:`, mailErr.message);
-          await FollowUpOtp.updateOne({ _id: otpRecord._id }, { status: "EXPIRED" }).catch(() => {});
-        }
       });
     } catch (err) {
       console.error("[followUp] request-otp error:", err.message);

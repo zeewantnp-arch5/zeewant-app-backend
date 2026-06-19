@@ -366,6 +366,44 @@ router.get("/test-email", async (_req, res) => {
   }
 });
 
+// ─── GET /api/admin/test-email?key=...&to=... ────────────────────────────────
+// Sends a test email via nodemailer. Use this to verify MAIL_USER/MAIL_PASS on Render.
+// Example: https://zeewant-app-backend.onrender.com/api/admin/test-email?key=zeewant_setup_2026&to=your@email.com
+router.get("/test-email", async (req, res) => {
+  const expectedKey = process.env.ADMIN_SETUP_SECRET;
+  const providedKey = req.query.key || req.headers["x-debug-key"];
+  if (!expectedKey || providedKey !== expectedKey) {
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+
+  const to = (req.query.to || "").trim();
+  if (!to) {
+    return res.status(400).json({ message: "Provide ?to=your@email.com in the URL" });
+  }
+
+  const mailUser = process.env.SMTP_USERNAME || process.env.MAIL_USER || "(not set)";
+  const mailPass = process.env.SMTP_PASSWORD || process.env.MAIL_PASS;
+
+  try {
+    await sendResetCodeEmail(to, "123456");
+    return res.json({
+      ok: true,
+      message: `Test email sent successfully to ${to}`,
+      mailUser,
+      passLength: mailPass ? mailPass.length : 0,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      ok: false,
+      message: err.message,
+      code: err.code ?? null,
+      mailUser,
+      passLength: mailPass ? mailPass.length : 0,
+      hint: "If code is EAUTH / 535: wrong App Password on Render. Regenerate at myaccount.google.com → Security → App passwords",
+    });
+  }
+});
+
 // ─── GET /api/admin/forgot-password-debug?key=... ───────────────────────────
 // Returns latest forgot-password flow stages to identify where requests hang.
 router.get("/forgot-password-debug", (req, res) => {
