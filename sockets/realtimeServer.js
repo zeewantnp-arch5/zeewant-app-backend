@@ -475,6 +475,30 @@ export function registerRealtimeServer(io) {
       socket.to(roomId).emit("user_stop_typing", senderId);
     });
 
+    // ── In-call emoji reactions ────────────────────────────────────────────────
+    // Broadcast a live emoji reaction to all other participants in the room.
+    // No DB persistence — reactions are ephemeral and only visible during the call.
+    socket.on("call_reaction", ({ roomId, senderId, senderName, reaction }) => {
+      if (!roomId || !reaction) return;
+      socket.to(roomId).emit("call_reaction", {
+        senderId: senderId || socket.data.userId,
+        senderName: senderName || socket.data.userName,
+        reaction,
+        timestamp: Date.now(),
+      });
+    });
+
+    // ── Raise / lower hand ────────────────────────────────────────────────────
+    // Broadcasts the hand-raise state to all other participants in the room.
+    socket.on("raise_hand", ({ roomId, userId, userName, raised }) => {
+      if (!roomId) return;
+      socket.to(roomId).emit("raise_hand", {
+        userId: userId || socket.data.userId,
+        userName: userName || socket.data.userName,
+        raised: raised === true,
+      });
+    });
+
     // Mark all messages in a room as read — replaces the HTTP PATCH round-trip.
     // Emits room_messages_read to the room (so sender sees tick update) and
     // session_updated to both personal rooms (so chat list badge resets).
