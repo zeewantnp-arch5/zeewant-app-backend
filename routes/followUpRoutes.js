@@ -329,7 +329,7 @@ export default function createFollowUpRoutes(io) {
       } catch (mailErr) {
         console.error(`[followUp] email failed for room ${roomId}:`, mailErr.message);
         return res.status(500).json({
-          message: `Failed to send OTP email: ${mailErr.message}. Please check email configuration.`,
+          message: `Failed to send OTP email: ${mailErr.message}`,
         });
       }
 

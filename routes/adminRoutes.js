@@ -459,7 +459,7 @@ router.post("/forgot-password", async (req, res) => {
       upsertForgotPasswordTrace(reqId, { stage: "mail-failed", mailErrorCode: mailError.code ?? null, mailErrorMessage: mailError.message, elapsedMs: Date.now() - startedAt, updatedAt: Date.now() });
       console.error(`[Admin Reset][${reqId}] mail error:`, mailError.message, mailError.code ?? "");
       return res.status(500).json({
-        message: `Email sending failed: ${mailError.message}. Ensure MAIL_USER and MAIL_PASS are set on Render.`,
+        message: `Email sending failed: ${mailError.message}`,
       });
     }
     upsertForgotPasswordTrace(reqId, { stage: "mail-sent", elapsedMs: Date.now() - startedAt, updatedAt: Date.now() });
