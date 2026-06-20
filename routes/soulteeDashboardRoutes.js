@@ -842,6 +842,11 @@ export default function createSoulteeDashboardRoutes(io) {
 
       // Notify both participants that chat is now locked
       io.to(link._id.toString()).emit("chat_locked", { roomId: link._id.toString() });
+      // Notify student's personal room so soultee_search_screen can hide Paid badge
+      io.to(`student:${req.params.studentUid}`).emit("session_ended", {
+        soulteeFirebaseUid: req.params.soulteeUid,
+        roomId: link._id.toString(),
+      });
 
       res.json({ message: "Student unlinked", link });
     } catch (err) {
@@ -1391,6 +1396,10 @@ export default function createSoulteeDashboardRoutes(io) {
           );
           if (chatLink) {
             io.to(chatLink._id.toString()).emit("chat_locked", { roomId: chatLink._id.toString() });
+            io.to(`student:${chatLink.studentFirebaseUid}`).emit("session_ended", {
+              soulteeFirebaseUid: chatLink.soulteeFirebaseUid,
+              roomId: chatLink._id.toString(),
+            });
           }
         } catch (autoErr) {
           console.error("Auto-complete session error:", autoErr.message);
@@ -1442,6 +1451,10 @@ export default function createSoulteeDashboardRoutes(io) {
       );
       if (chatLink) {
         io.to(chatLink._id.toString()).emit("chat_locked", { roomId: chatLink._id.toString() });
+        io.to(`student:${chatLink.studentFirebaseUid}`).emit("session_ended", {
+          soulteeFirebaseUid: chatLink.soulteeFirebaseUid,
+          roomId: chatLink._id.toString(),
+        });
       }
 
       res.json({ session, soulteeEarnings, platformEarnings });
