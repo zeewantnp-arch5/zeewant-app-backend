@@ -34,6 +34,15 @@ const messageSchema = new mongoose.Schema(
     deletedAt: { type: Date, default: null },
     // UIDs who deleted this message for themselves only ("Delete for Me")
     deletedForUsers: { type: [String], default: [] },
+    // Emoji reactions: each entry = { userId, emoji, reactedAt }
+    reactions: {
+      type: [{
+        userId:    { type: String, required: true },
+        emoji:     { type: String, required: true },
+        reactedAt: { type: Date, default: Date.now },
+      }],
+      default: [],
+    },
   },
   { timestamps: true }
 );

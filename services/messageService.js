@@ -34,7 +34,19 @@ export function serializeMessage(message) {
     deletedForEveryone,
     deletedBy: message.deletedBy || null,
     deletedAt: message.deletedAt || null,
+    reactions: buildReactionMap(message.reactions),
   };
+}
+
+// Flatten reactions array [{userId,emoji}] → { emoji: [userId, …] }
+function buildReactionMap(reactions) {
+  if (!reactions || !reactions.length) return {};
+  const map = {};
+  for (const r of reactions) {
+    if (!map[r.emoji]) map[r.emoji] = [];
+    map[r.emoji].push(r.userId);
+  }
+  return map;
 }
 
 export async function getRoomLinkForParticipant({

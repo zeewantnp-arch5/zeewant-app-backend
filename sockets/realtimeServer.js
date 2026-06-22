@@ -120,7 +120,9 @@ async function flushMissedCallNotifications(io, userUid, userRole) {
 }
 
 async function setSoulteeStatus(io, uid, status) {
-  await Soultee.findOneAndUpdate({ firebaseUid: uid }, { status });
+  const update = { status };
+  if (status === "offline") update.lastSeenAt = new Date();
+  await Soultee.findOneAndUpdate({ firebaseUid: uid }, update);
   io.emit("soultee_status_changed", {
     uid,
     status,
@@ -135,11 +137,19 @@ export async function resetRealtimePresenceState() {
   );
 }
 
+// In-memory last-seen for students (no MongoDB model for students)
+const studentLastSeenMap = new Map(); // uid → ISO string
+
 function setStudentStatus(io, uid, status) {
+  let lastSeenAt = null;
+  if (status === "offline") {
+    lastSeenAt = new Date().toISOString();
+    studentLastSeenMap.set(uid, lastSeenAt);
+  }
   io.emit("student_status_changed", {
     uid,
     status,
-    lastSeenAt: status === "offline" ? new Date().toISOString() : null,
+    lastSeenAt,
   });
 }
 
@@ -473,6 +483,61 @@ export function registerRealtimeServer(io) {
       }
 
       socket.to(roomId).emit("user_stop_typing", senderId);
+    });
+
+    // ── Voice-recording indicator (relayed; not persisted) ────────────────────
+    socket.on("voice_recording_start", ({ roomId, userId }) => {
+      if (!roomId) return;
+      socket.to(roomId).emit("voice_recording_start", { userId: userId || socket.data.userId });
+    });
+
+    socket.on("voice_recording_stop", ({ roomId, userId }) => {
+      if (!roomId) return;
+      socket.to(roomId).emit("voice_recording_stop", { userId: userId || socket.data.userId });
+    });
+
+    // ── Message emoji reactions (persisted) ───────────────────────────────────
+    // Client emits: { roomId, messageId, userId, emoji }
+    // Toggle: first reaction adds it, second reaction with same emoji removes it.
+    // Server emits back: { messageId, reactions: { emoji: [userId, …] } }
+    socket.on("message_react", async ({ roomId, messageId, userId, emoji }) => {
+      if (!ensureJoinedRoom(socket, roomId)) {
+        return emitSocketError(socket, "Join the room before reacting", { roomId });
+      }
+      if (!messageId || !emoji) {
+        return emitSocketError(socket, "messageId and emoji are required", { roomId });
+      }
+      const resolvedUid = userId || socket.data.userId;
+      if (!resolvedUid) return;
+
+      try {
+        const msg = await Message.findById(messageId).select("roomId reactions");
+        if (!msg || String(msg.roomId) !== String(roomId)) {
+          return emitSocketError(socket, "Message not found", { roomId, messageId });
+        }
+
+        // Toggle: if same user + same emoji already exists → remove, else add
+        const existingIdx = msg.reactions.findIndex(
+          (r) => r.userId === resolvedUid && r.emoji === emoji
+        );
+        if (existingIdx >= 0) {
+          msg.reactions.splice(existingIdx, 1);
+        } else {
+          msg.reactions.push({ userId: resolvedUid, emoji, reactedAt: new Date() });
+        }
+        await msg.save();
+
+        // Flatten to { emoji: [userId, …] } for Flutter
+        const reactionMap = {};
+        for (const r of msg.reactions) {
+          if (!reactionMap[r.emoji]) reactionMap[r.emoji] = [];
+          reactionMap[r.emoji].push(r.userId);
+        }
+
+        io.to(roomId).emit("message_reaction", { messageId, reactions: reactionMap });
+      } catch (err) {
+        emitSocketError(socket, err.message, { roomId });
+      }
     });
 
     // ── In-call emoji reactions ────────────────────────────────────────────────
