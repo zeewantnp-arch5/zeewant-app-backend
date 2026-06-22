@@ -75,6 +75,7 @@ export default function createSoulpanaRoutes(io) {
         description, anonymous, emotionTag,
         assignedSoulteeUid, assignedSoulteeName,
         mediaUrls,   // Firebase Storage URLs pre-uploaded by the client
+        userName,    // student display name (omitted when posting anonymously)
       } = req.body;
 
       if (!userId || !title || !category || !description) {
@@ -137,20 +138,47 @@ export default function createSoulpanaRoutes(io) {
         status:             'pending',
       };
 
+      const senderLabel = (anonymous === "true" || anonymous === true)
+        ? "Someone"
+        : (userName || "A student");
+
       if (entry.assignedSoulteeUid) {
-        // Notify the specific assigned soultee only
+        // Notify the specific assigned soultee — socket + FCM push
         emitToUser(io, "soultee", entry.assignedSoulteeUid, "new_emotional_question", payload);
+        createNotification(io, {
+          recipientUid:  entry.assignedSoulteeUid,
+          recipientRole: "soultee",
+          type:          "new_emotional_question",
+          title:         `${senderLabel} has a question for you`,
+          body:          entry.title,
+          data: {
+            type:       "new_emotional_question",
+            questionId: String(entry._id),
+            category:   entry.category,
+          },
+        }).catch((e) => console.error("[Soulpana notify soultee] error:", e.message));
       } else {
-        // No specific soultee → broadcast to all online soultees
+        // No specific soultee → broadcast socket to all; FCM to every soultee
         io.emit("emotional_question_submitted", payload);
-        Soultee.find({ status: { $in: ["online", "busy"] } })
-          .select("firebaseUid").lean()
+        Soultee.find({}).select("firebaseUid").lean()
           .then((soultees) => {
-            soultees.forEach(({ firebaseUid }) =>
-              emitToUser(io, "soultee", firebaseUid, "new_emotional_question", payload)
-            );
+            soultees.forEach(({ firebaseUid }) => {
+              emitToUser(io, "soultee", firebaseUid, "new_emotional_question", payload);
+              createNotification(io, {
+                recipientUid:  firebaseUid,
+                recipientRole: "soultee",
+                type:          "new_emotional_question",
+                title:         "New question in Soulpan",
+                body:          entry.title,
+                data: {
+                  type:       "new_emotional_question",
+                  questionId: String(entry._id),
+                  category:   entry.category,
+                },
+              }).catch(() => {});
+            });
           })
-          .catch((e) => console.error("Socket broadcast error:", e.message));
+          .catch((e) => console.error("[Soulpana broadcast] error:", e.message));
       }
 
     } catch (err) {
