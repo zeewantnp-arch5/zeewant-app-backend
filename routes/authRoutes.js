@@ -2,6 +2,7 @@ import express from "express";
 import bcrypt from "bcryptjs";
 import admin from "firebase-admin";
 import PhoneAuth from "../models/PhoneAuth.js";
+import BiometricDevice from "../models/BiometricDevice.js";
 
 const router = express.Router();
 
@@ -115,6 +116,49 @@ router.post("/reset-password", async (req, res) => {
       { upsert: true, new: true }
     );
     res.json({ message: "Password reset successfully" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ── POST /api/auth/biometric/register ────────────────────────────────────────
+// Called after OTP login to register phone for biometric login.
+// Body: { phone, firebaseUid }
+router.post("/biometric/register", async (req, res) => {
+  try {
+    const { phone, firebaseUid } = req.body;
+    if (!phone || !firebaseUid)
+      return res.status(400).json({ message: "phone and firebaseUid are required" });
+
+    await BiometricDevice.findOneAndUpdate(
+      { phone },
+      { phone, firebaseUid },
+      { upsert: true, new: true }
+    );
+    res.json({ message: "Biometric registered" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ── POST /api/auth/biometric/login ────────────────────────────────────────────
+// Returns a Firebase custom token if phone is registered for biometric.
+// Body: { phone }
+router.post("/biometric/login", async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone)
+      return res.status(400).json({ message: "phone is required" });
+
+    const device = await BiometricDevice.findOne({ phone });
+    if (!device)
+      return res.status(404).json({ message: "Biometric not registered for this device." });
+
+    if (!admin.apps.length)
+      return res.status(503).json({ message: "Auth service unavailable." });
+
+    const customToken = await admin.auth().createCustomToken(device.firebaseUid);
+    res.json({ customToken, firebaseUid: device.firebaseUid });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
