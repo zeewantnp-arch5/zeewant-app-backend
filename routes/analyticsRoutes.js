@@ -6,6 +6,7 @@ import Session from "../models/Session.js";
 import Soulpana from "../models/Soulpana.js";
 import Souljar from "../models/souljar.js";
 import AuditLog from "../models/AuditLog.js";
+import Payment from "../models/Payment.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import SoulteeApplication from "../models/SoulteeApplication.js";
 import admin from "../config/firebase.js";
@@ -738,6 +739,62 @@ router.get("/souljar", requireAdmin, requireAnalyticsAccess, async (req, res) =>
         createdAt: entry.createdAt,
         attachmentUrls: entry.attachmentUrls || [],
       })),
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ── GET /api/analytics/payments ───────────────────────────────────────────────
+router.get("/payments", requireAdmin, requireAnalyticsAccess, async (req, res) => {
+  try {
+    const [
+      esewaTotal, esewaSuccess, esewaFailed,   esewaRevPipe,
+      khaltiTotal, khaltiSuccess, khaltiFailure, khaltiRevPipe,
+      cosTotal, cosPending, cosApproved, cosRejected, cosRevPipe,
+    ] = await Promise.all([
+      Payment.countDocuments({ method: "esewa" }),
+      Payment.countDocuments({ method: "esewa", status: "completed" }),
+      Payment.countDocuments({ method: "esewa", status: "failed" }),
+      Payment.aggregate([{ $match: { method: "esewa", status: "completed" } }, { $group: { _id: null, t: { $sum: "$amount" } } }]),
+      Payment.countDocuments({ method: "khalti" }),
+      Payment.countDocuments({ method: "khalti", status: "completed" }),
+      Payment.countDocuments({ method: "khalti", status: "failed" }),
+      Payment.aggregate([{ $match: { method: "khalti", status: "completed" } }, { $group: { _id: null, t: { $sum: "$amount" } } }]),
+      Payment.countDocuments({ method: "cos" }),
+      Payment.countDocuments({ method: "cos", verificationStatus: "pending_verification" }),
+      Payment.countDocuments({ method: "cos", verificationStatus: "verified" }),
+      Payment.countDocuments({ method: "cos", verificationStatus: "rejected" }),
+      Payment.aggregate([{ $match: { method: "cos", status: "completed" } }, { $group: { _id: null, t: { $sum: "$amount" } } }]),
+    ]);
+
+    const esewaRev  = esewaRevPipe[0]?.t  ?? 0;
+    const khaltiRev = khaltiRevPipe[0]?.t ?? 0;
+    const cosRev    = cosRevPipe[0]?.t    ?? 0;
+
+    res.json({
+      esewa: {
+        total:      esewaTotal,
+        successful: esewaSuccess,
+        failed:     esewaFailed,
+        pending:    esewaTotal - esewaSuccess - esewaFailed,
+        revenue:    esewaRev,
+      },
+      khalti: {
+        total:      khaltiTotal,
+        successful: khaltiSuccess,
+        failed:     khaltiFailure,
+        pending:    khaltiTotal - khaltiSuccess - khaltiFailure,
+        revenue:    khaltiRev,
+      },
+      cos: {
+        total:    cosTotal,
+        pending:  cosPending,
+        approved: cosApproved,
+        rejected: cosRejected,
+        revenue:  cosRev,
+      },
+      totalRevenue: esewaRev + khaltiRev + cosRev,
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
