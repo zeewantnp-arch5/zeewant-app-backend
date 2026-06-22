@@ -403,6 +403,45 @@ export function registerRealtimeServer(io) {
       socket.emit("room_joined", { roomId, role: resolvedRole });
       console.log(`👥 ${userName || userId} joined room ${roomId}`);
 
+      // Push peer's CURRENT status to the joining user so the AppBar shows the
+      // correct Online / Last seen label even if the peer was already online when
+      // the chat screen opened (no status-change event would fire in that case).
+      try {
+        const peerRole = resolvedRole === "student" ? "soultee" : "student";
+        const peerUid  = resolvedRole === "student"
+          ? link.soulteeFirebaseUid
+          : link.studentFirebaseUid;
+
+        let peerStatus    = "offline";
+        let peerLastSeen  = null;
+
+        if (peerRole === "soultee") {
+          const soulteeDoc = await Soultee.findOne({ firebaseUid: peerUid })
+            .select("status lastSeenAt")
+            .lean();
+          if (soulteeDoc) {
+            peerStatus   = soulteeDoc.status || "offline";
+            peerLastSeen = soulteeDoc.lastSeenAt
+              ? soulteeDoc.lastSeenAt.toISOString()
+              : null;
+          }
+        } else {
+          peerStatus   = isUserOnline(studentSocketsByUid, peerUid) ? "online" : "offline";
+          peerLastSeen = studentLastSeenMap.get(peerUid) || null;
+        }
+
+        const statusEvent = peerRole === "soultee"
+          ? "soultee_status_changed"
+          : "student_status_changed";
+        socket.emit(statusEvent, {
+          uid:        peerUid,
+          status:     peerStatus,
+          lastSeenAt: peerStatus === "offline" ? peerLastSeen : null,
+        });
+      } catch (err) {
+        console.error("[join_room] peer-status lookup failed:", err.message);
+      }
+
       // Auto-deliver all queued "sent" messages for this user when they open the chat
       try {
         const deliveredCount = await markRoomMessagesDelivered({
