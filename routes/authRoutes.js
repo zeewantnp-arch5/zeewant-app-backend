@@ -122,17 +122,17 @@ router.post("/reset-password", async (req, res) => {
 });
 
 // ── POST /api/auth/biometric/register ────────────────────────────────────────
-// Called after OTP login to register phone for biometric login.
-// Body: { phone, firebaseUid }
+// Called from Biometric Setup screen to register device.
+// Body: { firebaseUid }
 router.post("/biometric/register", async (req, res) => {
   try {
-    const { phone, firebaseUid } = req.body;
-    if (!phone || !firebaseUid)
-      return res.status(400).json({ message: "phone and firebaseUid are required" });
+    const { firebaseUid } = req.body;
+    if (!firebaseUid)
+      return res.status(400).json({ message: "firebaseUid is required" });
 
     await BiometricDevice.findOneAndUpdate(
-      { phone },
-      { phone, firebaseUid },
+      { firebaseUid },
+      { firebaseUid },
       { upsert: true, new: true }
     );
     res.json({ message: "Biometric registered" });
@@ -142,23 +142,23 @@ router.post("/biometric/register", async (req, res) => {
 });
 
 // ── POST /api/auth/biometric/login ────────────────────────────────────────────
-// Returns a Firebase custom token if phone is registered for biometric.
-// Body: { phone }
+// Returns a Firebase custom token if UID is registered for biometric.
+// Body: { firebaseUid }
 router.post("/biometric/login", async (req, res) => {
   try {
-    const { phone } = req.body;
-    if (!phone)
-      return res.status(400).json({ message: "phone is required" });
+    const { firebaseUid } = req.body;
+    if (!firebaseUid)
+      return res.status(400).json({ message: "firebaseUid is required" });
 
-    const device = await BiometricDevice.findOne({ phone });
+    const device = await BiometricDevice.findOne({ firebaseUid });
     if (!device)
       return res.status(404).json({ message: "Biometric not registered for this device." });
 
     if (!admin.apps.length)
       return res.status(503).json({ message: "Auth service unavailable." });
 
-    const customToken = await admin.auth().createCustomToken(device.firebaseUid);
-    res.json({ customToken, firebaseUid: device.firebaseUid });
+    const customToken = await admin.auth().createCustomToken(firebaseUid);
+    res.json({ customToken, firebaseUid });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
