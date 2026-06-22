@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import Payment from "../models/Payment.js";
 import Soultee from "../models/Soultee.js";
 import UserSubscription from "../models/UserSubscription.js";
+import SubscriptionPlan from "../models/SubscriptionPlan.js";
 import Session from "../models/Session.js";
 import SystemSettings from "../models/SystemSettings.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
@@ -11,6 +12,7 @@ import FollowUpOtp from "../models/FollowUpCode.js";
 import { buildEsewaFormParams, verifyEsewaCallback } from "../services/esewaService.js";
 import { initiateKhaltiPayment, verifyKhaltiPayment } from "../services/khaltiService.js";
 import { sendPushNotification } from "../services/fcmService.js";
+import { buildPersonalRoom } from "../services/notificationService.js";
 import PDFDocument from "pdfkit";
 
 const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
@@ -45,20 +47,27 @@ async function activateSubscription(payment, io = null) {
     .select("durationMinutes feePerSession")
     .lean();
 
-  // durationMinutes (e.g. 10) is the in-app chat session length shown in the UI.
-  // It is NOT used as the subscription expiry — doing so caused users to lose
-  // their paid session if they were logged out, had a network drop, or restarted
-  // the app within the window.
-  //
-  // Subscription access lasts 24 hours from payment. The 10-minute chat timer
-  // is enforced by the in-app session UI, not by backend subscription status.
+  // Determine subscription duration from the plan if one is set,
+  // otherwise default to 24 h (single session-based payments).
+  let durationDays = 0;
+  if (payment.planId) {
+    try {
+      const plan = await SubscriptionPlan.findById(payment.planId).select("durationDays").lean();
+      if (plan?.durationDays > 0) durationDays = plan.durationDays;
+    } catch (_) {}
+  }
+
   const expiryDate = new Date(startDate);
-  expiryDate.setHours(expiryDate.getHours() + 24);
+  if (durationDays > 0) {
+    expiryDate.setDate(expiryDate.getDate() + durationDays);
+  } else {
+    expiryDate.setHours(expiryDate.getHours() + 24);
+  }
 
   await UserSubscription.create({
     userId:        payment.userId,
     soulteeId:     payment.soulteeId,
-    planId:        payment.planId ?? null,       // optional — may be null for dynamic payments
+    planId:        payment.planId ?? null,
     planName:      payment.planName ?? "session",
     paymentId:     payment._id,
     transactionId: payment.gatewayTransactionId,
@@ -70,13 +79,14 @@ async function activateSubscription(payment, io = null) {
   });
 
   // Create an upcoming session — pre-calculate soulteeEarnings using DB commission rate
+  let existingLink = null;
   try {
     const commissionRate    = await getCommissionRate();
     const soulteeEarnings   = +(payment.amount * (1 - commissionRate / 100)).toFixed(2);
     const platformEarnings  = +(payment.amount * commissionRate / 100).toFixed(2);
 
     // New payment = full reset: unlock chat, reactivate ended link, expire old OTPs
-    const existingLink = await StudentSoulteeLink.findOne({
+    existingLink = await StudentSoulteeLink.findOne({
       soulteeFirebaseUid: payment.soulteeId,
       studentFirebaseUid: payment.userId,
     }).lean().catch(() => null);
@@ -111,9 +121,34 @@ async function activateSubscription(payment, io = null) {
   // Notify soultee dashboard to refresh stats in real-time
   if (io) {
     io.to(`soultee:${payment.soulteeId}`).emit("stats:updated");
-    console.log(`[Payment] stats:updated emitted to soultee:${payment.soulteeId}`);
+
+    // Emit real-time unlock to the student so chat unlocks instantly without polling
+    const studentRoom = buildPersonalRoom("student", payment.userId);
+    const roomId = existingLink?._id?.toString() ?? null;
+    io.to(studentRoom).emit("chat_unlocked", {
+      roomId,
+      soulteeId: payment.soulteeId,
+      method:    payment.method,
+      expiryDate: expiryDate.toISOString(),
+    });
+    if (payment.method === "cos") {
+      io.to(studentRoom).emit("cos_request_approved", {
+        transactionUuid: payment.transactionUuid,
+        roomId,
+        soulteeId:  payment.soulteeId,
+        expiryDate: expiryDate.toISOString(),
+      });
+    } else {
+      io.to(studentRoom).emit("subscription_activated", {
+        roomId,
+        soulteeId:  payment.soulteeId,
+        method:     payment.method,
+        expiryDate: expiryDate.toISOString(),
+      });
+    }
+    console.log(`[Payment] chat_unlocked emitted to ${studentRoom} (method=${payment.method})`);
   } else {
-    console.warn("[Payment] io not available — stats:updated not emitted");
+    console.warn("[Payment] io not available — chat_unlocked not emitted");
   }
 
   const expiryStr = expiryDate.toLocaleString("en-US", {
@@ -755,6 +790,27 @@ router.post("/cos", async (req, res) => {
       return res.status(400).json({ message: "This Soultee has not set a consultation fee yet." });
     }
 
+    const backendUrl = process.env.BACKEND_URL || "http://localhost:5000";
+
+    // Return existing pending COS instead of creating a duplicate
+    const existingPending = await Payment.findOne({
+      userId,
+      soulteeId,
+      method: "cos",
+      verificationStatus: "pending_verification",
+    }).lean();
+    if (existingPending) {
+      return res.json({
+        success: true,
+        transactionUuid: existingPending.transactionUuid,
+        amount: existingPending.amount,
+        currency: soultee.currency ?? "NPR",
+        invoiceUrl: `${backendUrl}/api/payments/invoice/${existingPending.transactionUuid}`,
+        message: "You already have a pending Cash on Service request.",
+        isExisting: true,
+      });
+    }
+
     const transactionUuid = crypto.randomBytes(6).toString("hex");
 
     await Payment.create({
@@ -779,7 +835,6 @@ router.post("/cos", async (req, res) => {
       });
     }
 
-    const backendUrl = process.env.BACKEND_URL || "http://localhost:5000";
     return res.json({
       success: true,
       transactionUuid,
@@ -787,6 +842,7 @@ router.post("/cos", async (req, res) => {
       currency: soultee.currency ?? "NPR",
       invoiceUrl: `${backendUrl}/api/payments/invoice/${transactionUuid}`,
       message: "Your Cash on Service request has been submitted successfully.",
+      isExisting: false,
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -881,7 +937,14 @@ router.post("/verify-cos", requireAdminJwt, async (req, res) => {
       data: { type: "cos_rejected", transactionUuid, screen: "cos_status" },
     }).catch(() => {});
 
-    if (io) io.of("/analytics").emit("cos_update", { action: "rejected", transactionUuid });
+    if (io) {
+      io.of("/analytics").emit("cos_update", { action: "rejected", transactionUuid });
+      // Notify student in real-time so their chat screen updates immediately
+      io.to(buildPersonalRoom("student", payment.userId)).emit("cos_request_rejected", {
+        transactionUuid,
+        reason: reason || "Payment verification failed",
+      });
+    }
     return res.json({ success: true, message: "COS payment rejected." });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -957,6 +1020,38 @@ router.get("/cos-status/:transactionUuid", async (req, res) => {
       rejectionReason:    payment.rejectionReason,
       approvedAt:         payment.approvedAt,
       createdAt:          payment.createdAt,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// GET /api/payments/pending-cos-check?userId=&soulteeId=
+// Student polls this to check if they have a pending COS request (before opening payment gate)
+router.get("/pending-cos-check", async (req, res) => {
+  try {
+    const { userId, soulteeId } = req.query;
+    if (!userId || !soulteeId) {
+      return res.status(400).json({ message: "userId and soulteeId are required" });
+    }
+    const backendUrl = process.env.BACKEND_URL || "http://localhost:5000";
+    const payment = await Payment.findOne({
+      userId,
+      soulteeId,
+      method: "cos",
+      verificationStatus: "pending_verification",
+    }).lean();
+
+    if (!payment) {
+      return res.json({ hasPending: false });
+    }
+
+    return res.json({
+      hasPending: true,
+      transactionUuid: payment.transactionUuid,
+      amount: payment.amount,
+      invoiceUrl: `${backendUrl}/api/payments/invoice/${payment.transactionUuid}`,
+      createdAt: payment.createdAt,
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
