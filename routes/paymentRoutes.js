@@ -11,6 +11,7 @@ import FollowUpOtp from "../models/FollowUpCode.js";
 import { buildEsewaFormParams, verifyEsewaCallback } from "../services/esewaService.js";
 import { initiateKhaltiPayment, verifyKhaltiPayment } from "../services/khaltiService.js";
 import { sendPushNotification } from "../services/fcmService.js";
+import PDFDocument from "pdfkit";
 
 const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
 
@@ -770,10 +771,11 @@ router.post("/cos", async (req, res) => {
 
     const io = req.app.get("io");
     if (io) {
-      io.of("/analytics").to("analytics_room").emit("analytics_snapshot", {
-        type: "cos_request_submitted",
-        ts: Date.now(),
+      io.of("/analytics").emit("cos_update", {
+        action: "new",
         transactionUuid,
+        amount: fee,
+        ts: Date.now(),
       });
     }
 
@@ -858,6 +860,7 @@ router.post("/verify-cos", requireAdminJwt, async (req, res) => {
         { new: true }
       );
       await activateSubscription(updated, io);
+      if (io) io.of("/analytics").emit("cos_update", { action: "approved", transactionUuid });
       return res.json({ success: true, message: "COS payment approved and subscription activated." });
     }
 
@@ -878,6 +881,7 @@ router.post("/verify-cos", requireAdminJwt, async (req, res) => {
       data: { type: "cos_rejected", transactionUuid, screen: "cos_status" },
     }).catch(() => {});
 
+    if (io) io.of("/analytics").emit("cos_update", { action: "rejected", transactionUuid });
     return res.json({ success: true, message: "COS payment rejected." });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -907,6 +911,27 @@ router.get("/pending-cos", requireAdminJwt, async (req, res) => {
     ]);
 
     return res.json({ success: true, total, payments });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// DELETE /api/payments/cos/:transactionUuid — Admin hard-delete a COS record
+router.delete("/cos/:transactionUuid", requireAdminJwt, async (req, res) => {
+  try {
+    const payment = await Payment.findOneAndDelete({
+      transactionUuid: req.params.transactionUuid,
+      method: "cos",
+    });
+    if (!payment) return res.status(404).json({ message: "COS payment not found." });
+
+    // Emit real-time event so all admin clients update instantly
+    const io = req.app.get("io");
+    if (io) {
+      io.of("/analytics").emit("cos_update", { action: "deleted", transactionUuid: req.params.transactionUuid });
+    }
+
+    return res.json({ success: true, message: "COS record deleted." });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -1093,71 +1118,75 @@ router.get("/my-payments/:userId", async (req, res) => {
 //  INVOICE  (printable HTML)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// GET /api/payments/invoice/:transactionUuid
+// GET /api/payments/invoice/:transactionUuid  — downloads as PDF
 router.get("/invoice/:transactionUuid", async (req, res) => {
   try {
     const payment = await Payment.findOne({ transactionUuid: req.params.transactionUuid }).lean();
-    if (!payment) return res.status(404).send("<h2>Invoice not found.</h2>");
+    if (!payment) return res.status(404).json({ message: "Invoice not found." });
 
     const soultee = await Soultee.findOne({ firebaseUid: payment.soulteeId }).select("name").lean();
-    const date = new Date(payment.createdAt).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+    const date    = new Date(payment.createdAt).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
     const methodLabel = payment.method === "esewa" ? "eSewa" : payment.method === "khalti" ? "Khalti" : "Cash on Service";
-    const statusColor = payment.status === "completed" ? "#008080" : payment.status === "failed" ? "#e53e3e" : "#d69e2e";
-    const statusLabel = payment.status === "completed" ? "Paid" : payment.status === "failed" ? "Failed" : "Pending Verification";
+    const statusLabel = payment.status === "completed" ? "PAID" : payment.status === "failed" ? "FAILED" : "PENDING";
+    const txnId = payment.transactionUuid.toUpperCase();
 
-    res.setHeader("Content-Type", "text/html");
-    res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-  <title>Invoice #${payment.transactionUuid.toUpperCase()}</title>
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:'Helvetica Neue',Arial,sans-serif;background:#f7f9fc;padding:40px 20px;color:#2d3748}
-    .invoice{max-width:640px;margin:0 auto;background:#fff;border-radius:16px;box-shadow:0 4px 32px rgba(0,0,0,.08);overflow:hidden}
-    .hdr{background:linear-gradient(135deg,#008080,#00a896);padding:32px;color:#fff}
-    .hdr h1{font-size:28px;font-weight:800;letter-spacing:-.5px}
-    .hdr p{opacity:.85;margin-top:6px;font-size:14px}
-    .body{padding:32px}
-    .sec-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#718096;margin-bottom:12px;margin-top:24px}
-    .row{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid #edf2f7}
-    .row:last-child{border-bottom:none}
-    .lbl{color:#718096;font-size:13px}.val{font-weight:600;font-size:13px;color:#2d3748}
-    .amt-row{background:#f0faf5;border-radius:12px;padding:16px 20px;display:flex;justify-content:space-between;align-items:center;margin-top:20px}
-    .amt-lbl{font-size:16px;font-weight:700}.amt-val{font-size:28px;font-weight:900;color:#008080}
-    .badge{display:inline-block;padding:3px 12px;border-radius:20px;font-size:12px;font-weight:700;background:${statusColor}20;color:${statusColor}}
-    .footer{background:#f7f9fc;padding:18px 32px;font-size:11px;color:#a0aec0;text-align:center;border-top:1px solid #edf2f7}
-    .print-btn{display:block;text-align:center;margin-top:24px}
-    .print-btn button{background:#008080;color:#fff;border:none;padding:12px 28px;border-radius:8px;font-size:15px;font-weight:700;cursor:pointer}
-    @media print{body{background:#fff;padding:0}.invoice{box-shadow:none}.print-btn{display:none}}
-  </style>
-</head>
-<body>
-  <div class="invoice">
-    <div class="hdr"><h1>Zeewant</h1><p>Payment Invoice</p></div>
-    <div class="body">
-      <div class="sec-title">Invoice Details</div>
-      <div class="row"><span class="lbl">Invoice No.</span><span class="val">#${payment.transactionUuid.toUpperCase()}</span></div>
-      <div class="row"><span class="lbl">Date</span><span class="val">${date}</span></div>
-      <div class="row"><span class="lbl">Payment Method</span><span class="val">${methodLabel}</span></div>
-      <div class="row"><span class="lbl">Status</span><span class="val"><span class="badge">${statusLabel}</span></span></div>
-      ${payment.gatewayTransactionId ? `<div class="row"><span class="lbl">Gateway Ref</span><span class="val">${payment.gatewayTransactionId}</span></div>` : ""}
-      <div class="sec-title">Session Details</div>
-      <div class="row"><span class="lbl">Service</span><span class="val">Consultation Session</span></div>
-      <div class="row"><span class="lbl">Counselor</span><span class="val">${soultee?.name || "Zeewant Soultee"}</span></div>
-      <div class="row"><span class="lbl">Plan</span><span class="val">${payment.planName || "Session"}</span></div>
-      <div class="amt-row">
-        <span class="amt-lbl">Total Amount</span>
-        <span class="amt-val">NPR ${payment.amount}</span>
-      </div>
-    </div>
-    <div class="footer">This invoice is generated by Zeewant • Simraungadh Office, Bara, Nepal</div>
-  </div>
-  <div class="print-btn"><button onclick="window.print()">Print / Save as PDF</button></div>
-</body>
-</html>`);
+    const doc = new PDFDocument({ size: "A4", margin: 50 });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="invoice-${txnId}.pdf"`);
+    doc.pipe(res);
+
+    // ── Header bar ──
+    doc.rect(0, 0, doc.page.width, 90).fill("#008080");
+    doc.fillColor("#ffffff").fontSize(26).font("Helvetica-Bold").text("ZEEWANT", 50, 28);
+    doc.fontSize(11).font("Helvetica").text("Payment Invoice", 50, 58);
+    doc.fillColor("#2d3748");
+
+    // ── Invoice title + ID ──
+    doc.moveDown(3);
+    doc.fontSize(13).font("Helvetica-Bold").fillColor("#008080").text("INVOICE", 50, 110);
+    doc.fontSize(10).font("Helvetica").fillColor("#718096").text(`#${txnId}`, 50, 127);
+
+    // ── Divider ──
+    doc.moveTo(50, 148).lineTo(545, 148).strokeColor("#e2e8f0").lineWidth(1).stroke();
+
+    // ── Helper: row ──
+    const row = (label, value, y) => {
+      doc.fontSize(10).font("Helvetica").fillColor("#718096").text(label, 50, y);
+      doc.fontSize(10).font("Helvetica-Bold").fillColor("#2d3748").text(value, 250, y, { width: 295, align: "right" });
+    };
+
+    let y = 162;
+    doc.fontSize(11).font("Helvetica-Bold").fillColor("#2d3748").text("Invoice Details", 50, y); y += 20;
+    row("Invoice No.",     `#${txnId}`,                  y); y += 18;
+    row("Date",            date,                          y); y += 18;
+    row("Payment Method",  methodLabel,                   y); y += 18;
+    row("Status",          statusLabel,                   y); y += 18;
+    if (payment.gatewayTransactionId) {
+      row("Gateway Ref",   payment.gatewayTransactionId,  y); y += 18;
+    }
+
+    y += 10;
+    doc.moveTo(50, y).lineTo(545, y).strokeColor("#edf2f7").stroke(); y += 16;
+
+    doc.fontSize(11).font("Helvetica-Bold").fillColor("#2d3748").text("Session Details", 50, y); y += 20;
+    row("Service",    "Consultation Session",               y); y += 18;
+    row("Counselor",  soultee?.name || "Zeewant Soultee",   y); y += 18;
+    row("Plan",       payment.planName || "Session",        y); y += 18;
+
+    y += 16;
+    // ── Amount box ──
+    doc.rect(50, y, 495, 54).fill("#f0faf5");
+    doc.fontSize(13).font("Helvetica-Bold").fillColor("#2d3748").text("Total Amount", 70, y + 18);
+    doc.fontSize(22).font("Helvetica-Bold").fillColor("#008080").text(`NPR ${payment.amount}`, 70, y + 12, { width: 455, align: "right" });
+
+    y += 80;
+    doc.moveTo(50, y).lineTo(545, y).strokeColor("#edf2f7").stroke(); y += 14;
+    doc.fontSize(9).font("Helvetica").fillColor("#a0aec0")
+       .text("This invoice is generated by Zeewant  •  Simraungadh Office, Bara, Nepal", 50, y, { align: "center", width: 495 });
+
+    doc.end();
   } catch (err) {
-    res.status(500).send(`<h2>Error: ${err.message}</h2>`);
+    if (!res.headersSent) res.status(500).json({ message: err.message });
   }
 });
 
@@ -1165,63 +1194,72 @@ router.get("/invoice/:transactionUuid", async (req, res) => {
 //  RECEIPT  (printable HTML — only for completed payments)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// GET /api/payments/receipt/:transactionUuid
+// GET /api/payments/receipt/:transactionUuid  — downloads as PDF
 router.get("/receipt/:transactionUuid", async (req, res) => {
   try {
     const payment = await Payment.findOne({ transactionUuid: req.params.transactionUuid, status: "completed" }).lean();
-    if (!payment) return res.status(404).send("<h2>Receipt not found or payment not completed.</h2>");
+    if (!payment) return res.status(404).json({ message: "Receipt not found or payment not completed." });
 
     const soultee = await Soultee.findOne({ firebaseUid: payment.soulteeId }).select("name").lean();
     const date = new Date(payment.verifiedAt || payment.updatedAt).toLocaleDateString("en-US", {
       year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit",
     });
     const methodLabel = payment.method === "esewa" ? "eSewa" : payment.method === "khalti" ? "Khalti" : "Cash on Service";
+    const txnId = payment.transactionUuid.toUpperCase();
 
-    res.setHeader("Content-Type", "text/html");
-    res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-  <title>Receipt #${payment.transactionUuid.toUpperCase()}</title>
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:'Helvetica Neue',Arial,sans-serif;background:#f0faf5;padding:40px 20px;color:#2d3748}
-    .receipt{max-width:460px;margin:0 auto;background:#fff;border-radius:16px;box-shadow:0 4px 32px rgba(0,128,128,.15);overflow:hidden}
-    .hdr{background:linear-gradient(135deg,#008080,#00a896);padding:28px 32px;color:#fff;text-align:center}
-    .check{font-size:52px;margin-bottom:8px}.hdr h1{font-size:20px;font-weight:800}.hdr p{opacity:.85;font-size:12px;margin-top:4px}
-    .body{padding:24px 32px}
-    .amt{text-align:center;font-size:38px;font-weight:900;color:#008080;margin:16px 0}
-    .div{border:none;border-top:2px dashed #e2e8f0;margin:16px 0}
-    .row{display:flex;justify-content:space-between;padding:7px 0}
-    .lbl{color:#718096;font-size:13px}.val{font-weight:600;font-size:13px}
-    .footer{background:#f7f9fc;padding:14px 32px;font-size:11px;color:#a0aec0;text-align:center}
-    .print-btn{display:block;text-align:center;margin-top:20px}
-    .print-btn button{background:#008080;color:#fff;border:none;padding:10px 24px;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer}
-    @media print{body{background:#fff;padding:0}.receipt{box-shadow:none}.print-btn{display:none}}
-  </style>
-</head>
-<body>
-  <div class="receipt">
-    <div class="hdr"><div class="check">✅</div><h1>Payment Successful</h1><p>Official Receipt — Zeewant</p></div>
-    <div class="body">
-      <div class="amt">NPR ${payment.amount}</div>
-      <hr class="div">
-      <div class="row"><span class="lbl">Receipt No.</span><span class="val">#${payment.transactionUuid.toUpperCase()}</span></div>
-      <div class="row"><span class="lbl">Date &amp; Time</span><span class="val">${date}</span></div>
-      <div class="row"><span class="lbl">Payment Via</span><span class="val">${methodLabel}</span></div>
-      ${payment.gatewayTransactionId ? `<div class="row"><span class="lbl">Transaction ID</span><span class="val">${payment.gatewayTransactionId}</span></div>` : ""}
-      <div class="row"><span class="lbl">Counselor</span><span class="val">${soultee?.name || "Zeewant Soultee"}</span></div>
-      <div class="row"><span class="lbl">Service</span><span class="val">Consultation Session</span></div>
-      <hr class="div">
-      <div class="row"><span class="lbl" style="font-weight:700">Status</span><span class="val" style="color:#008080;font-weight:700">PAID</span></div>
-    </div>
-    <div class="footer">Thank you for using Zeewant • Simraungadh Office, Bara, Nepal</div>
-  </div>
-  <div class="print-btn"><button onclick="window.print()">Print / Save as PDF</button></div>
-</body>
-</html>`);
+    const doc = new PDFDocument({ size: "A4", margin: 50 });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="receipt-${txnId}.pdf"`);
+    doc.pipe(res);
+
+    // ── Header bar ──
+    doc.rect(0, 0, doc.page.width, 100).fill("#008080");
+    doc.fillColor("#ffffff").fontSize(22).font("Helvetica-Bold").text("Payment Successful", 50, 26, { align: "center", width: 495 });
+    doc.fontSize(11).font("Helvetica").text("Official Receipt — Zeewant", 50, 54, { align: "center", width: 495 });
+    doc.fillColor("#2d3748");
+
+    // ── Amount ──
+    doc.moveDown(4.5);
+    doc.fontSize(36).font("Helvetica-Bold").fillColor("#008080")
+       .text(`NPR ${payment.amount}`, 50, 122, { align: "center", width: 495 });
+
+    // ── Dashed divider ──
+    doc.moveTo(50, 172).lineTo(545, 172).dash(4, { space: 4 }).strokeColor("#e2e8f0").lineWidth(1).stroke();
+    doc.undash();
+
+    // ── Helper: row ──
+    const row = (label, value, y) => {
+      doc.fontSize(10).font("Helvetica").fillColor("#718096").text(label, 50, y);
+      doc.fontSize(10).font("Helvetica-Bold").fillColor("#2d3748").text(value, 250, y, { width: 295, align: "right" });
+    };
+
+    let y = 186;
+    row("Receipt No.",   `#${txnId}`,                       y); y += 20;
+    row("Date & Time",   date,                               y); y += 20;
+    row("Payment Via",   methodLabel,                        y); y += 20;
+    if (payment.gatewayTransactionId) {
+      row("Transaction ID", payment.gatewayTransactionId,   y); y += 20;
+    }
+    row("Counselor",     soultee?.name || "Zeewant Soultee", y); y += 20;
+    row("Service",       "Consultation Session",             y); y += 20;
+
+    // ── Dashed divider ──
+    doc.moveTo(50, y + 4).lineTo(545, y + 4).dash(4, { space: 4 }).strokeColor("#e2e8f0").lineWidth(1).stroke();
+    doc.undash();
+    y += 18;
+
+    // ── PAID badge ──
+    doc.fontSize(11).font("Helvetica-Bold").fillColor("#718096").text("Status", 50, y);
+    doc.fontSize(11).font("Helvetica-Bold").fillColor("#008080").text("PAID", 250, y, { width: 295, align: "right" });
+
+    y += 40;
+    doc.moveTo(50, y).lineTo(545, y).strokeColor("#edf2f7").lineWidth(1).stroke(); y += 14;
+    doc.fontSize(9).font("Helvetica").fillColor("#a0aec0")
+       .text("Thank you for using Zeewant  •  Simraungadh Office, Bara, Nepal", 50, y, { align: "center", width: 495 });
+
+    doc.end();
   } catch (err) {
-    res.status(500).send(`<h2>Error: ${err.message}</h2>`);
+    if (!res.headersSent) res.status(500).json({ message: err.message });
   }
 });
 
