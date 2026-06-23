@@ -158,6 +158,13 @@ router.post("/biometric/login", async (req, res) => {
       return res.status(503).json({ message: "Auth service unavailable." });
 
     const customToken = await admin.auth().createCustomToken(firebaseUid);
+
+    // Record lastBiometricLogin timestamp (non-blocking)
+    admin.firestore().collection('users').doc(firebaseUid).set(
+      { lastBiometricLogin: admin.firestore.FieldValue.serverTimestamp() },
+      { merge: true }
+    ).catch(() => {});
+
     res.json({ customToken, firebaseUid });
   } catch (err) {
     res.status(500).json({ message: err.message });
