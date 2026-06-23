@@ -41,6 +41,7 @@ import { runSubscriptionExpiryJob } from "./services/subscriptionExpiryService.j
 import { runFeatureExpiryJob } from "./services/featureExpiryService.js";
 import createFollowUpRoutes from "./routes/followUpRoutes.js";
 import { runFollowUpExpiryJob } from "./services/followUpExpiryService.js";
+import userRoutes from "./routes/userRoutes.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -125,6 +126,7 @@ app.use("/api/subscriptions",         subscriptionRoutes);
 app.use("/api/payments",              paymentRoutes);
 app.use("/api/feature-subscriptions", featureSubscriptionRoutes);
 app.use("/api/follow-up",             createFollowUpRoutes(io));
+app.use("/api/users",                 userRoutes);
 app.use(express.static(join(__dirname, "public")));
 app.use("/uploads", express.static(join(__dirname, "uploads")));
 
