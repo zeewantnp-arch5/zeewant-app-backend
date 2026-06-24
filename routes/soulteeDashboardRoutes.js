@@ -17,6 +17,7 @@ import {
 import { createNotification, emitToUser } from "../services/notificationService.js";
 import { syncProfileToRTDB } from "../config/firebase.js";
 import SystemSettings from "../models/SystemSettings.js";
+import CallEvent from "../models/CallEvent.js";
 
 const PLATFORM_COMMISSION_RATE = 10; // fallback if DB setting missing
 
@@ -813,6 +814,17 @@ export default function createSoulteeDashboardRoutes(io) {
       const sessionStart = link.acceptedAt || link.requestedAt || now;
       const durationMinutes = Math.max(1, Math.round((now - new Date(sessionStart)) / 60000));
 
+      // Determine session type from the most recent call event in this room.
+      // CallEvent.callType is "video" or "audio"; map audio→voice to match Session.sessionType enum.
+      const recentCall = await CallEvent.findOne(
+        { roomId: link._id.toString() },
+        { callType: 1 },
+        { sort: { createdAt: -1 } }
+      ).lean();
+      const sessionType = recentCall
+        ? (recentCall.callType === "video" ? "video" : "voice")
+        : "chat";
+
       // Complete existing payment session if one exists, otherwise create a new record
       const completedExisting = await Session.findOneAndUpdate(
         {
@@ -821,7 +833,7 @@ export default function createSoulteeDashboardRoutes(io) {
           status: { $in: ["upcoming", "ongoing"] },
           sessionFee: { $gt: 0 },
         },
-        { $set: { status: "completed", sessionType: "chat", durationMinutes, scheduledAt: sessionStart } },
+        { $set: { status: "completed", sessionType, durationMinutes, scheduledAt: sessionStart } },
         { new: true, sort: { createdAt: -1 } }
       );
 
@@ -832,7 +844,7 @@ export default function createSoulteeDashboardRoutes(io) {
           studentName: link.studentName || "Student",
           scheduledAt: sessionStart,
           durationMinutes,
-          sessionType: "chat",
+          sessionType,
           status: "completed",
         }).catch(() => {});
       }
