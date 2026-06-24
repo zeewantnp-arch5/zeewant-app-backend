@@ -244,10 +244,15 @@ export default function createChatRoutes(io) {
         });
       }).catch(() => {});
 
+      // Respond immediately — FCM/notification runs after the response is flushed.
+      // Previously createNotification was awaited before res.json(), adding 150-500ms
+      // of FCM latency to every message. Fire-and-forget eliminates that block entirely.
+      res.status(201).json({ message: payload });
+
       // Skip standard "New Message" push for missed-call entries — the caller
       // already sends a dedicated FCM missed-call notification separately.
       if (type !== "missed_call") {
-        await createNotification(io, {
+        createNotification(io, {
           recipientUid,
           recipientRole,
           type: "new_message",
@@ -259,10 +264,8 @@ export default function createChatRoutes(io) {
             senderId,
             senderRole,
           },
-        });
+        }).catch(() => {});
       }
-
-      res.status(201).json({ message: payload });
     } catch (err) {
       const statusCode = err.message === "Room access denied" ? 403 : 500;
       res.status(statusCode).json({ message: err.message });
