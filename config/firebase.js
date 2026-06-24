@@ -9,12 +9,17 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Generate this from: Firebase Console → Project Settings → Service Accounts → Generate new private key
 let serviceAccount;
 try {
-  serviceAccount = JSON.parse(
-    readFileSync(join(__dirname, "../firebase-service-account.json"), "utf8")
-  );
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    // Production (Render.com): credentials passed as env var
+    serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+  } else {
+    // Local dev: read from file
+    serviceAccount = JSON.parse(
+      readFileSync(join(__dirname, "../firebase-service-account.json"), "utf8")
+    );
+  }
 } catch {
-  // Allow startup without the key (socket-only mode); FCM notifications will be skipped
-  console.warn("⚠️  firebase-service-account.json not found — push notifications disabled");
+  console.warn("⚠️  Firebase service account not configured — biometric login and push notifications disabled");
 }
 
 if (serviceAccount && !admin.apps.length) {
