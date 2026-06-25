@@ -323,7 +323,11 @@ export default function createChatRoutes(io) {
         message: payload,
       });
 
-      await createNotification(io, {
+      res.status(201).json({ message: payload });
+
+      // Fire-and-forget FCM — same pattern as the text-message route.
+      // Previously awaited before res.json(), blocking the 201 by 150-500ms.
+      createNotification(io, {
         recipientUid,
         recipientRole,
         type: "new_message",
@@ -336,9 +340,7 @@ export default function createChatRoutes(io) {
           senderRole,
           messageType: normalizedType,
         },
-      });
-
-      res.status(201).json({ message: payload });
+      }).catch(() => {});
     } catch (err) {
       const statusCode = err.message === "Room access denied" ? 403 : 500;
       res.status(statusCode).json({ message: err.message });
