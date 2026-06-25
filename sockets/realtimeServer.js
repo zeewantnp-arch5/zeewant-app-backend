@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import Message from "../models/Message.js";
 import Session from "../models/Session.js";
 import Soultee from "../models/Soultee.js";
@@ -469,46 +470,78 @@ export function registerRealtimeServer(io) {
       if (!ensureJoinedRoom(socket, roomId)) {
         return emitSocketError(socket, "Join the room before sending messages", { roomId });
       }
-
       if (type === "text" && !String(text || "").trim()) {
         return emitSocketError(socket, "Message text is required", { roomId });
       }
 
-      try {
-        const resolvedRole = senderRole || socket.data.role;
-        const { message, recipientUid, recipientRole, link } = await createPersistentMessage({
-          roomId,
-          senderId,
-          senderName,
-          senderRole: resolvedRole,
-          text,
-          type,
-          replyToMessageId,
-          replyToText,
-          replyToSenderName,
-        });
+      const resolvedRole = senderRole || socket.data.role;
 
-        const payload = serializeMessage(message);
+      // Validate room access — uses LRU cache after first lookup (~1 ms on repeat)
+      const link = await getRoomLinkForParticipant({
+        roomId, userId: senderId, userRole: resolvedRole,
+      });
+      if (!link) return emitSocketError(socket, "Room access denied", { roomId });
 
-        io.to(roomId).emit("new_message", payload);
-        io.to(buildPersonalRoom(recipientRole, recipientUid)).emit("new_message", payload);
-        io.to(buildPersonalRoom(resolvedRole, senderId)).emit("new_message", payload);
-        io.to(buildPersonalRoom(recipientRole, recipientUid)).emit("message_unread", { roomId, message: payload });
+      const recipientUid = resolvedRole === "student" ? link.soulteeFirebaseUid : link.studentFirebaseUid;
+      const recipientRole = resolvedRole === "student" ? "soultee" : "student";
+      const now = new Date();
+      const msgId = new mongoose.Types.ObjectId();
 
+      // Broadcast IMMEDIATELY — both sides see the message before DB write completes.
+      // The _id is pre-generated so Flutter can deduplicate on the echo.
+      const payload = {
+        _id: msgId,
+        roomId, senderId, senderName,
+        senderRole: resolvedRole,
+        recipientUid, recipientRole,
+        text: text || "",
+        type,
+        callType: null,
+        attachmentUrl: null, attachmentName: null,
+        attachmentMimeType: null, attachmentSize: null,
+        replyToMessageId: replyToMessageId || null,
+        replyToText: replyToText || null,
+        replyToSenderName: replyToSenderName || null,
+        status: "sent",
+        deliveredAt: null, readAt: null,
+        createdAt: now, updatedAt: now,
+        isDeleted: false, deletedForEveryone: false,
+        deletedBy: null, deletedAt: null,
+        reactions: {},
+      };
+      io.to(roomId).emit("new_message", payload);
+      io.to(buildPersonalRoom(recipientRole, recipientUid)).emit("new_message", payload);
+      io.to(buildPersonalRoom(resolvedRole, senderId)).emit("new_message", payload);
+      io.to(buildPersonalRoom(recipientRole, recipientUid)).emit("message_unread", { roomId, message: payload });
+
+      // Persist to DB and fire FCM in the background — does not block the emit
+      Message.create({
+        _id: msgId,
+        roomId, senderId,
+        senderName: senderName || "",
+        senderRole: resolvedRole,
+        recipientUid, recipientRole,
+        text: text || "",
+        type,
+        replyToMessageId: replyToMessageId || null,
+        replyToText: replyToText || null,
+        replyToSenderName: replyToSenderName || null,
+      }).then((savedMsg) => {
         pushSessionUpdate(io, roomId, link.studentFirebaseUid, link.soulteeFirebaseUid);
-
-        // Fire FCM push so recipient gets notified even when the app is in background
         createNotification(io, {
-          recipientUid,
-          recipientRole,
+          recipientUid, recipientRole,
           type: "new_message",
           title: "New Message",
-          body: senderName ? `${senderName}: ${String(text || "").substring(0, 80)}` : String(text || "").substring(0, 80),
-          data: { roomId, messageId: String(message._id), senderId, type: "new_message" },
+          body: senderName
+            ? `${senderName}: ${String(text || "").substring(0, 80)}`
+            : String(text || "").substring(0, 80),
+          data: { roomId, messageId: String(savedMsg._id), senderId, type: "new_message" },
         }).catch(() => {});
-      } catch (err) {
-        emitSocketError(socket, err.message, { roomId });
-      }
+      }).catch((err) => {
+        console.error("[send_message] DB save failed:", err.message);
+        // Notify the sender so their bubble can show a failure indicator
+        socket.emit("socket_error", { message: "Message could not be saved. Please retry.", roomId });
+      });
     });
 
     socket.on("typing", ({ roomId, senderId }) => {
