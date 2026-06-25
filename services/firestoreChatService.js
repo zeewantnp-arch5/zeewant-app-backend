@@ -69,6 +69,11 @@ export async function sendSystemMessage({
   const now = admin.firestore.Timestamp.now();
   const docRef = msgs(roomId).doc();
 
+  // Derive participant UIDs so the conversation doc always has them,
+  // even when sendSystemMessage is the first write to this conversation.
+  const studentUid = senderRole === 'student' ? senderId : recipientUid;
+  const soulteeUid = senderRole === 'soultee' ? senderId : recipientUid;
+
   const batch = db.batch();
 
   batch.set(docRef, {
@@ -91,6 +96,10 @@ export async function sendSystemMessage({
   batch.set(
     conv(roomId),
     {
+      // Always persist participant UIDs so security rules can evaluate
+      // isParticipant() correctly on both read and write paths.
+      studentUid,
+      soulteeUid,
       lastMessage: { id: docRef.id, text, type, senderId, createdAt: now },
       updatedAt: now,
       [`unreadCounts.${recipientUid}`]: admin.firestore.FieldValue.increment(1),
