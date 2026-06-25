@@ -462,7 +462,10 @@ export function registerRealtimeServer(io) {
       }
     });
 
-    socket.on("send_message", async ({ roomId, senderId, senderName, senderRole, text, type = "text" }) => {
+    socket.on("send_message", async ({
+      roomId, senderId, senderName, senderRole, text, type = "text",
+      replyToMessageId = null, replyToText = null, replyToSenderName = null,
+    }) => {
       if (!ensureJoinedRoom(socket, roomId)) {
         return emitSocketError(socket, "Join the room before sending messages", { roomId });
       }
@@ -480,29 +483,29 @@ export function registerRealtimeServer(io) {
           senderRole: resolvedRole,
           text,
           type,
+          replyToMessageId,
+          replyToText,
+          replyToSenderName,
         });
 
         const payload = serializeMessage(message);
 
-        // 1. Deliver to everyone currently in the chat room
         io.to(roomId).emit("new_message", payload);
-        // 2. Deliver to recipient's personal room (catches them when not in chat screen)
         io.to(buildPersonalRoom(recipientRole, recipientUid)).emit("new_message", payload);
-        // 3. Echo to sender's personal room (multi-device / race condition safety)
         io.to(buildPersonalRoom(resolvedRole, senderId)).emit("new_message", payload);
-        // 4. Legacy unread badge event
-        io.to(buildPersonalRoom(recipientRole, recipientUid)).emit("message_unread", {
-          roomId,
-          message: payload,
-        });
+        io.to(buildPersonalRoom(recipientRole, recipientUid)).emit("message_unread", { roomId, message: payload });
 
-        // 5. Push session list update so chat list refreshes with new preview + badge
-        pushSessionUpdate(
-          io,
-          roomId,
-          link.studentFirebaseUid,
-          link.soulteeFirebaseUid
-        );
+        pushSessionUpdate(io, roomId, link.studentFirebaseUid, link.soulteeFirebaseUid);
+
+        // Fire FCM push so recipient gets notified even when the app is in background
+        createNotification(io, {
+          recipientUid,
+          recipientRole,
+          type: "new_message",
+          title: "New Message",
+          body: senderName ? `${senderName}: ${String(text || "").substring(0, 80)}` : String(text || "").substring(0, 80),
+          data: { roomId, messageId: String(message._id), senderId, type: "new_message" },
+        }).catch(() => {});
       } catch (err) {
         emitSocketError(socket, err.message, { roomId });
       }

@@ -2,6 +2,25 @@ import mongoose from "mongoose";
 import UserSubscription from "../models/UserSubscription.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 
+// Cache valid subscriptions for 5 minutes to avoid a DB read on every message.
+const _subCache = new Map();
+const _SUB_TTL = 5 * 60_000;
+
+function _subKey(userId, soulteeId) { return `${userId}:${soulteeId}`; }
+function _getCachedSub(userId, soulteeId) {
+  const e = _subCache.get(_subKey(userId, soulteeId));
+  if (!e) return null;
+  if (Date.now() - e.ts > _SUB_TTL) { _subCache.delete(_subKey(userId, soulteeId)); return null; }
+  return e.sub;
+}
+function _cacheSub(userId, soulteeId, sub) {
+  _subCache.set(_subKey(userId, soulteeId), { sub, ts: Date.now() });
+  if (_subCache.size > 2000) _subCache.delete(_subCache.keys().next().value);
+}
+export function invalidateSubCache(userId, soulteeId) {
+  _subCache.delete(_subKey(userId, soulteeId));
+}
+
 /**
  * Middleware: block students who lack an active subscription for the specific
  * student-soultee pair being accessed.
@@ -69,6 +88,12 @@ export async function requireSubscription(req, res, next) {
       });
     }
 
+    const cached = _getCachedSub(userId, soulteeId);
+    if (cached) {
+      req.subscription = cached;
+      return next();
+    }
+
     const now = new Date();
     const subscription = await UserSubscription.findOne({
       userId,
@@ -84,6 +109,7 @@ export async function requireSubscription(req, res, next) {
       });
     }
 
+    _cacheSub(userId, soulteeId, subscription);
     req.subscription = subscription;
     next();
   } catch (err) {

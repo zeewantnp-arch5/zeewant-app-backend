@@ -19,6 +19,9 @@ const messageSchema = new mongoose.Schema(
     attachmentName: { type: String, default: null },
     attachmentMimeType: { type: String, default: null },
     attachmentSize: { type: Number, default: null },
+    replyToMessageId: { type: String, default: null },
+    replyToText: { type: String, default: null },
+    replyToSenderName: { type: String, default: null },
     status: {
       type: String,
       enum: ["sent", "delivered", "read"],

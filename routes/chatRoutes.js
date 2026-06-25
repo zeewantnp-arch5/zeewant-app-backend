@@ -185,6 +185,9 @@ export default function createChatRoutes(io) {
         attachmentUrl = null,
         attachmentName = null,
         attachmentMimeType = null,
+        replyToMessageId = null,
+        replyToText = null,
+        replyToSenderName = null,
       } = req.body;
 
       // For attachment messages the text may be the filename, so only require
@@ -209,6 +212,9 @@ export default function createChatRoutes(io) {
         callType: callType || null,
         attachment,
         allowPending,
+        replyToMessageId,
+        replyToText,
+        replyToSenderName,
       });
 
       console.log(`[chat/save] ✓ msgId=${message._id} room=${req.params.roomId} from=${senderId}(${senderRole})`);

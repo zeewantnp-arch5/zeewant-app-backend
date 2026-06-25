@@ -1,6 +1,24 @@
 import Message from "../models/Message.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 
+// In-memory LRU-style cache for room link lookups.
+// Avoids 1 extra MongoDB read per message for the same room.
+const _roomCache = new Map();
+const _ROOM_TTL = 120_000; // 2 minutes
+
+function _getCached(roomId) {
+  const e = _roomCache.get(roomId);
+  if (!e) return null;
+  if (Date.now() - e.ts > _ROOM_TTL) { _roomCache.delete(roomId); return null; }
+  return e.link;
+}
+function _setCache(roomId, link) {
+  _roomCache.set(roomId, { link, ts: Date.now() });
+  if (_roomCache.size > 1000) _roomCache.delete(_roomCache.keys().next().value);
+}
+// Call this when a room's state changes (accept, end session) to prevent stale reads.
+export function invalidateRoomCache(roomId) { _roomCache.delete(roomId); }
+
 function allowedStatuses(allowPending, allowEnded) {
   const statuses = ["active"];
   if (allowPending) statuses.push("pending");
@@ -25,6 +43,9 @@ export function serializeMessage(message) {
     attachmentName: deletedForEveryone ? null : (message.attachmentName || null),
     attachmentMimeType: deletedForEveryone ? null : (message.attachmentMimeType || null),
     attachmentSize: deletedForEveryone ? null : (message.attachmentSize || null),
+    replyToMessageId: deletedForEveryone ? null : (message.replyToMessageId || null),
+    replyToText: deletedForEveryone ? null : (message.replyToText || null),
+    replyToSenderName: deletedForEveryone ? null : (message.replyToSenderName || null),
     status: message.status || "sent",
     deliveredAt: message.deliveredAt || null,
     readAt: message.readAt || null,
@@ -56,8 +77,18 @@ export async function getRoomLinkForParticipant({
   allowPending = false,
   allowEnded = false,
 }) {
-  if (!roomId || !userId || !userRole) {
-    return null;
+  if (!roomId || !userId || !userRole) return null;
+
+  // Only cache the standard active-only path (no pending/ended overrides)
+  // so we don't accidentally serve stale state for edge-case lookups.
+  const cacheable = !allowPending && !allowEnded;
+  if (cacheable) {
+    const cached = _getCached(roomId);
+    if (cached) {
+      if (userRole === "student" && cached.studentFirebaseUid === userId) return cached;
+      if (userRole === "soultee" && cached.soulteeFirebaseUid === userId) return cached;
+      return null; // cached but not a participant
+    }
   }
 
   const link = await StudentSoulteeLink.findOne({
@@ -65,18 +96,11 @@ export async function getRoomLinkForParticipant({
     status: { $in: allowedStatuses(allowPending, allowEnded) },
   }).lean();
 
-  if (!link) {
-    return null;
-  }
+  if (!link) return null;
+  if (cacheable) _setCache(roomId, link);
 
-  if (userRole === "student" && link.studentFirebaseUid === userId) {
-    return link;
-  }
-
-  if (userRole === "soultee" && link.soulteeFirebaseUid === userId) {
-    return link;
-  }
-
+  if (userRole === "student" && link.studentFirebaseUid === userId) return link;
+  if (userRole === "soultee" && link.soulteeFirebaseUid === userId) return link;
   return null;
 }
 
@@ -90,6 +114,9 @@ export async function createPersistentMessage({
   callType = null,
   attachment = null,
   allowPending = false,
+  replyToMessageId = null,
+  replyToText = null,
+  replyToSenderName = null,
 }) {
   const link = await getRoomLinkForParticipant({
     roomId,
@@ -120,6 +147,9 @@ export async function createPersistentMessage({
     attachmentName: attachment?.name || null,
     attachmentMimeType: attachment?.mimeType || null,
     attachmentSize: attachment?.size || null,
+    replyToMessageId: replyToMessageId || null,
+    replyToText: replyToText || null,
+    replyToSenderName: replyToSenderName || null,
   });
 
   return {
