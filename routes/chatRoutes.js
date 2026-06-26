@@ -245,6 +245,8 @@ export default function createChatRoutes(io) {
         replyToMessageId = null,
         replyToText = null,
         replyToSenderName = null,
+        clientId = null,       // client-generated id used for message_id_synced
+        skipAgoraRelay = false, // true when Flutter already sent via Agora SDK
       } = req.body;
 
       // For attachment messages the text may be the filename, so only require
@@ -277,14 +279,25 @@ export default function createChatRoutes(io) {
       console.log(`[chat/save] ✓ msgId=${message._id} room=${req.params.roomId} from=${senderId}(${senderRole})`);
       const payload = serializeMessage(message);
 
-      // ── Real-time delivery via Agora Chat (replaces Socket.IO new_message) ───
-      // Fire-and-forget: message is already in MongoDB; Agora Chat queues delivery
-      // for offline recipients automatically.
-      sendAgoraChatMessage({
-        fromUid: senderId,
-        toUid:   recipientUid,
-        payload,
-      }).catch(() => {});
+      // ── Real-time delivery via Agora Chat ────────────────────────────────────
+      // Skip when Flutter already delivered via Agora SDK (skipAgoraRelay=true)
+      // to prevent the peer receiving the same message twice.
+      if (!skipAgoraRelay) {
+        sendAgoraChatMessage({
+          fromUid: senderId,
+          toUid:   recipientUid,
+          payload,
+        }).catch(() => {});
+      }
+
+      // ── clientId → MongoDB _id sync ───────────────────────────────────────────
+      // Both sender and receiver update their in-memory bubble id via socket.
+      if (clientId) {
+        io.to(req.params.roomId).emit("message_id_synced", {
+          clientId,
+          mongoId: String(message._id),
+        });
+      }
 
       // ── Session list refresh (Socket.IO — chat list badges, not message body) ─
       // Push session list refresh using the just-saved message as preview (avoids
