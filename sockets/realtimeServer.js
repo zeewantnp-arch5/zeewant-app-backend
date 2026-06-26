@@ -383,6 +383,17 @@ export function registerRealtimeServer(io) {
       }
     });
 
+    socket.on("student_go_offline", ({ uid }) => {
+      if (!uid) {
+        return emitSocketError(socket, "uid is required to set student offline");
+      }
+
+      const wentOffline = removeSocket(studentSocketsByUid, uid, socket.id);
+      if (wentOffline) {
+        setStudentStatus(io, uid, "offline");
+      }
+    });
+
     socket.on("join_room", async ({ roomId, userId, userName, userRole }) => {
       const resolvedRole = resolveRole(socket, userRole, userId);
       const link = await validateRoomAccess(roomId, userId, resolvedRole);

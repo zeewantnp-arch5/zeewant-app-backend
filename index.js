@@ -57,10 +57,11 @@ const io = new Server(httpServer, {
   // browser/older builds use polling→WS upgrade.
   transports: ["polling", "websocket"],
   // pingInterval: how often the server sends a heartbeat to the client.
-  pingInterval: 25000,
+  pingInterval: 10000,
   // pingTimeout: how long to wait for a pong before declaring the socket dead.
-  // 60 s gives mobile clients time to respond after backgrounding / network switch.
-  pingTimeout: 60000,
+  // 10 s is aggressive enough to detect app crashes / network drops quickly
+  // while still tolerating brief mobile network hiccups.
+  pingTimeout: 10000,
   // upgradeTimeout: time allowed for the HTTP→WebSocket upgrade handshake.
   upgradeTimeout: 30000,
   // connectTimeout: maximum time for the initial connection handshake.
