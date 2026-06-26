@@ -6,8 +6,6 @@ import {
   getCallHistoryForRoom,
   markCallsSeen,
 } from "../services/callEventService.js";
-import { generateLiveKitToken, getLiveKitUrl } from "../services/livekitService.js";
-
 const router = express.Router();
 
 // ── GET /api/calls/history/:userUid  — full call log for a user ──────────────
@@ -75,43 +73,6 @@ router.patch("/seen/bulk", async (req, res) => {
     }
     await markCallsSeen(callIds);
     res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
-
-// ── GET /api/calls/livekit-token  — generate a LiveKit access token ──────────
-// Query: ?room=livekitRoomName&userId=uid&userName=Display+Name
-// Returns: { token, livekitUrl } — Flutter passes these to Room.connect()
-router.get("/livekit-token", async (req, res) => {
-  try {
-    const { room, userId, userName } = req.query;
-
-    if (!room || !userId) {
-      return res.status(400).json({ message: "room and userId are required" });
-    }
-
-    const livekitUrl = getLiveKitUrl();
-    if (!livekitUrl) {
-      return res.status(503).json({ message: "LiveKit server not configured (LIVEKIT_URL missing)" });
-    }
-
-    const token = await generateLiveKitToken({
-      roomName: room,
-      participantIdentity: userId,
-      participantName: userName || userId,
-    });
-
-    if (!token) {
-      return res.status(503).json({ message: "LiveKit credentials not configured (LIVEKIT_API_KEY/SECRET missing)" });
-    }
-
-    res.json({
-      token,
-      livekitUrl,
-      room,
-      expiresInSeconds: 7200,
-    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

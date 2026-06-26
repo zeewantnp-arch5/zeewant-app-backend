@@ -6,6 +6,7 @@ import { sendPushNotification } from "./fcmService.js";
 export const FEATURE_PRICING = {
   soulway: 399, // NPR/month
   souljar: 99,  // NPR/month
+  chat:    199, // NPR/month
 };
 
 const TRIAL_DAYS        = 7;
@@ -116,7 +117,7 @@ export async function activateFeatureSubscription(payment) {
     { upsert: true, new: true }
   );
 
-  const label = feature === "soulway" ? "SoulWay" : "SoulJar";
+  const label = feature === "soulway" ? "SoulWay" : feature === "chat" ? "Soultee Chat" : "SoulJar";
   const endStr = subscriptionEndDate.toLocaleDateString("en-US", {
     day: "numeric", month: "long", year: "numeric",
   });
@@ -176,8 +177,8 @@ export async function getFeatureRevenueStats() {
     ]),
   ]);
 
-  const revenue = { soulway: 0, souljar: 0 };
-  const payments = { soulway: 0, souljar: 0 };
+  const revenue = { soulway: 0, souljar: 0, chat: 0 };
+  const payments = { soulway: 0, souljar: 0, chat: 0 };
   for (const s of paymentStats) {
     revenue[s._id]  = s.totalRevenue;
     payments[s._id] = s.totalPayments;

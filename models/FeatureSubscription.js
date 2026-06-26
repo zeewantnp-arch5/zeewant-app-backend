@@ -1,11 +1,11 @@
 import mongoose from "mongoose";
 
-// Tracks per-user trial and paid subscription access to SoulWay and SoulJar.
+// Tracks per-user trial and paid subscription access to SoulWay, SoulJar, and Chat.
 // One document per (userId, feature) pair — upserted on trial init and on payment.
 const featureSubscriptionSchema = new mongoose.Schema(
   {
     userId:  { type: String, required: true, index: true }, // Firebase UID
-    feature: { type: String, enum: ["soulway", "souljar"], required: true },
+    feature: { type: String, enum: ["soulway", "souljar", "chat"], required: true },
 
     // Trial window (set once on first access)
     trialStartDate: { type: Date, required: true },

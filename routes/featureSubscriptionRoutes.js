@@ -20,7 +20,7 @@ const BACKEND_URL         = (
   process.env.BACKEND_URL || "http://localhost:5000"
 ).replace(/\/+$/, "");
 
-const VALID_FEATURES = new Set(["soulway", "souljar"]);
+const VALID_FEATURES = new Set(["soulway", "souljar", "chat"]);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function esewaSign(totalAmount, transactionUuid) {
@@ -50,7 +50,7 @@ const KHALTI_FAILED  = new Set(["User canceled", "Expired", "Refunded", "Partial
 router.get("/status/:userId/:feature", async (req, res) => {
   const { userId, feature } = req.params;
   if (!VALID_FEATURES.has(feature))
-    return res.status(400).json({ message: "Invalid feature. Use 'soulway' or 'souljar'." });
+    return res.status(400).json({ message: "Invalid feature. Use 'soulway', 'souljar', or 'chat'." });
   try {
     const access = await getOrInitFeatureAccess(userId, feature);
     res.json({ ...access, feature, userId });
@@ -66,9 +66,10 @@ router.get("/status/:userId/:feature", async (req, res) => {
 router.get("/dashboard/:userId", async (req, res) => {
   const { userId } = req.params;
   try {
-    const [soulway, souljar] = await Promise.all([
+    const [soulway, souljar, chat] = await Promise.all([
       getOrInitFeatureAccess(userId, "soulway"),
       getOrInitFeatureAccess(userId, "souljar"),
+      getOrInitFeatureAccess(userId, "chat"),
     ]);
     // Recent payments for payment history
     const payments = await FeaturePayment.find({ userId, status: "completed" })
@@ -76,7 +77,7 @@ router.get("/dashboard/:userId", async (req, res) => {
       .limit(20)
       .lean();
 
-    res.json({ soulway, souljar, payments });
+    res.json({ soulway, souljar, chat, payments });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -109,7 +110,7 @@ router.post("/payment/initiate", async (req, res) => {
     });
 
     if (method === "khalti") {
-      const featureName = feature === "soulway" ? "SoulWay" : "SoulJar";
+      const featureName = feature === "soulway" ? "SoulWay" : feature === "chat" ? "Soultee Chat" : "SoulJar";
       const { pidx, paymentUrl } = await initiateKhaltiPayment({
         amount,
         transactionUuid,

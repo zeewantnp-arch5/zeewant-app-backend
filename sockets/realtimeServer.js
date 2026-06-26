@@ -26,7 +26,7 @@ import {
   markMissedCallsNotified,
   buildCallEventText,
 } from "../services/callEventService.js";
-import { generateLiveKitToken, getLiveKitUrl } from "../services/livekitService.js";
+import { generateAgoraRtcToken, getAgoraAppId } from "../services/agoraRtcService.js";
 
 function emitSocketError(socket, message, details = {}) {
   socket.emit("socket_error", { message, ...details });
@@ -994,11 +994,11 @@ export function registerRealtimeServer(io) {
       socket.to(roomId).emit("call_rejected", { rejectedBy: socket.data.userId });
     });
 
-    // ── LiveKit Call Lifecycle ─────────────────────────────────────────────────
+    // ── Agora Call Lifecycle (voice + video) ─────────────────────────────────
     // Emitted by caller when they tap the call button and the peer is online.
-    // Backend creates a CallEvent, checks actual online state, generates LiveKit
-    // access tokens for both parties, then routes call_incoming to the receiver.
-    socket.on("call_initiate", async ({ to, roomId, callerName, callerImage, isVideo, livekitRoom }) => {
+    // Backend creates a CallEvent, checks actual online state, generates Agora RTC
+    // tokens for both parties, then routes call_incoming to the receiver.
+    socket.on("call_initiate", async ({ to, roomId, callerName, callerImage, isVideo = false, agoraChannel }) => {
       const callerId = socket.data.userId;
       const callerRole = socket.data.role;
 
@@ -1013,13 +1013,12 @@ export function registerRealtimeServer(io) {
       const receiverRole = callerRole === "student" ? "soultee" : "student";
       const receiverRegistry = receiverRole === "student" ? studentSocketsByUid : soulteeSocketsByUid;
       const isReceiverOnline = isUserOnline(receiverRegistry, to);
-      const normalizedCallType = isVideo ? "video" : "audio";
       const resolvedCallerName = callerName || socket.data.userName || callerId;
-      const livekitUrl = getLiveKitUrl();
+      const agoraAppId = getAgoraAppId();
 
       console.log(
         `📞 call_initiate: ${resolvedCallerName}(${callerId}) → ${to} ` +
-        `type=${normalizedCallType} receiverOnline=${isReceiverOnline}`
+        `channel=${agoraChannel} receiverOnline=${isReceiverOnline}`
       );
 
       try {
@@ -1031,9 +1030,9 @@ export function registerRealtimeServer(io) {
           callerName: resolvedCallerName,
           receiverId: to,
           receiverRole,
-          callType: normalizedCallType,
+          callType: isVideo ? "video" : "audio",
           status: isReceiverOnline ? "incoming" : "missed",
-          livekitRoom: livekitRoom || null,
+          livekitRoom: agoraChannel || null,
         });
         console.log(`[CallPerf] call_initiate: callEvent created in ${Date.now() - _t0}ms`);
 
@@ -1044,7 +1043,7 @@ export function registerRealtimeServer(io) {
             recipientUid: to,
             recipientRole: receiverRole,
             type: "call_incoming",
-            title: `Missed ${normalizedCallType === "video" ? "video" : "voice"} call`,
+            title: isVideo ? "Missed video call" : "Missed voice call",
             body: `${resolvedCallerName} tried to call you`,
             data: {
               roomId: String(roomId),
@@ -1052,8 +1051,9 @@ export function registerRealtimeServer(io) {
               callerRole: String(callerRole),
               callerName: String(resolvedCallerName),
               callerImage: String(callerImage || ""),
-              callType: normalizedCallType,
-              livekitRoom: String(livekitRoom || ""),
+              callType: isVideo ? "video" : "audio",
+              isVideo: String(isVideo),
+              agoraChannel: String(agoraChannel || ""),
               callEventId,
               missed: "true",
             },
@@ -1065,35 +1065,22 @@ export function registerRealtimeServer(io) {
 
           return socket.emit("call_unavailable", {
             roomId,
-            callType: normalizedCallType,
+            callType: isVideo ? "video" : "audio",
             reason: "receiver_offline",
             callEventId,
           });
         }
 
-        // Generate LiveKit access tokens for both parties.
-        // generateLiveKitToken is async in livekit-server-sdk v2.x — must be awaited.
+        // Generate Agora RTC tokens for both parties (uid=0 → Agora auto-assigns).
         const _t1 = Date.now();
-        const [callerToken, receiverToken] = await Promise.all([
-          generateLiveKitToken({
-            roomName: livekitRoom,
-            participantIdentity: callerId,
-            participantName: resolvedCallerName,
-          }),
-          generateLiveKitToken({
-            roomName: livekitRoom,
-            participantIdentity: to,
-            participantName: null,
-          }),
-        ]);
+        const callerRtc   = generateAgoraRtcToken(agoraChannel, 0, 3600);
+        const receiverRtc = generateAgoraRtcToken(agoraChannel, 0, 3600);
         console.log(`[CallPerf] call_initiate: tokens generated in ${Date.now() - _t1}ms`);
 
-        if (!callerToken || !receiverToken) {
-          console.error("[call_initiate] token generation failed — check LIVEKIT_API_KEY/LIVEKIT_API_SECRET env vars");
+        if (!callerRtc || !receiverRtc) {
+          console.error("[call_initiate] Agora RTC token generation failed — check AGORA_APP_ID/AGORA_APP_CERTIFICATE env vars");
           return emitSocketError(socket, "Call server not configured. Contact support.", { roomId });
         }
-
-        console.log(`[call_initiate] tokens generated callerToken.length=${callerToken.length} receiverToken.length=${receiverToken.length}`);
 
         const personalRoom = buildPersonalRoom(receiverRole, to);
         io.to(personalRoom).emit("call_incoming", {
@@ -1103,18 +1090,19 @@ export function registerRealtimeServer(io) {
           callerImage: callerImage || null,
           callerRole,
           isVideo,
-          livekitRoom,
-          livekitUrl,
-          livekitToken: receiverToken,
+          agoraChannel,
+          agoraToken: receiverRtc.token,
+          agoraAppId,
           callEventId,
         });
 
-        console.log(`📲 call_incoming sent to room="${personalRoom}" callEventId=${callEvent._id} livekitUrl=${livekitUrl}`);
+        console.log(`📲 call_incoming sent to room="${personalRoom}" callEventId=${callEvent._id}`);
 
         socket.emit("call_initiated", {
           callEventId,
-          livekitToken: callerToken,
-          livekitUrl,
+          agoraChannel,
+          agoraToken: callerRtc.token,
+          agoraAppId,
         });
         console.log(`[CallPerf] call_initiate: total flow ${Date.now() - _t0}ms`);
       } catch (err) {
@@ -1124,11 +1112,11 @@ export function registerRealtimeServer(io) {
     });
 
     // Emitted by the receiver when they tap Accept in the incoming call dialog.
-    socket.on("call_accepted", async ({ to, livekitRoom, callEventId }) => {
+    socket.on("call_accepted", async ({ to, agoraChannel, callEventId }) => {
       const receiverRole = socket.data.role;
       const callerRole = receiverRole === "student" ? "soultee" : "student";
       const receiverId = socket.data.userId;
-      console.log(`✅ call_accepted: receiver=${receiverId} → caller=${to} room=${livekitRoom}`);
+      console.log(`✅ call_accepted: receiver=${receiverId} → caller=${to} channel=${agoraChannel}`);
 
       try {
         if (callEventId) await markCallAccepted(callEventId);
@@ -1138,7 +1126,7 @@ export function registerRealtimeServer(io) {
         const targetRoom = buildPersonalRoom(callerRole, to);
         io.to(targetRoom).emit("call_accepted", {
           from: receiverId,
-          livekitRoom,
+          agoraChannel,
           callEventId,
         });
         console.log(`📤 call_accepted relayed to room="${targetRoom}"`);
@@ -1148,17 +1136,17 @@ export function registerRealtimeServer(io) {
       io.to(buildPersonalRoom(callerRole, to)).emit("call_state_changed", {
         state: "in_progress",
         callEventId,
-        livekitRoom,
+        agoraChannel,
       });
       socket.emit("call_state_changed", {
         state: "in_progress",
         callEventId,
-        livekitRoom,
+        agoraChannel,
       });
     });
 
     // Emitted by the receiver when they tap Decline.
-    socket.on("call_rejected", async ({ to, livekitRoom, callEventId }) => {
+    socket.on("call_rejected", async ({ to, agoraChannel, callEventId }) => {
       const receiverRole = socket.data.role;
       const callerRole = receiverRole === "student" ? "soultee" : "student";
       console.log(`❌ call_rejected: receiver=${socket.data.userId} → caller=${to}`);
@@ -1170,7 +1158,7 @@ export function registerRealtimeServer(io) {
       if (to) {
         io.to(buildPersonalRoom(callerRole, to)).emit("call_rejected", {
           from: socket.data.userId,
-          livekitRoom,
+          agoraChannel,
           callEventId,
         });
         io.to(buildPersonalRoom(callerRole, to)).emit("call_state_changed", {
@@ -1181,7 +1169,7 @@ export function registerRealtimeServer(io) {
     });
 
     // Emitted by the caller when they cancel from CallingScreen (or 30 s timeout).
-    socket.on("call_cancelled", async ({ to, livekitRoom, callEventId }) => {
+    socket.on("call_cancelled", async ({ to, agoraChannel, callEventId }) => {
       const callerRole = socket.data.role;
       const receiverRole = callerRole === "student" ? "soultee" : "student";
       console.log(`🚫 call_cancelled: caller=${socket.data.userId} → receiver=${to}`);
@@ -1193,7 +1181,7 @@ export function registerRealtimeServer(io) {
       if (to) {
         io.to(buildPersonalRoom(receiverRole, to)).emit("call_cancelled", {
           from: socket.data.userId,
-          livekitRoom,
+          agoraChannel,
         });
         io.to(buildPersonalRoom(receiverRole, to)).emit("call_state_changed", {
           state: "cancelled",

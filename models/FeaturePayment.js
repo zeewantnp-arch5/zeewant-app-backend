@@ -1,10 +1,10 @@
 import mongoose from "mongoose";
 
-// Payment record for a SoulWay or SoulJar feature subscription purchase.
+// Payment record for a SoulWay, SoulJar, or Chat feature subscription purchase.
 const featurePaymentSchema = new mongoose.Schema(
   {
     userId:  { type: String, required: true, index: true },
-    feature: { type: String, enum: ["soulway", "souljar"], required: true },
+    feature: { type: String, enum: ["soulway", "souljar", "chat"], required: true },
     amount:  { type: Number, required: true },              // NPR, server-authoritative
     method:  { type: String, enum: ["esewa", "khalti"], required: true },
 

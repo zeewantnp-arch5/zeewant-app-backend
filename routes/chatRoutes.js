@@ -6,6 +6,7 @@ import { fileURLToPath } from "url";
 import { dirname } from "path";
 import { buildPersonalRoom, createNotification } from "../services/notificationService.js";
 import { requireSubscription } from "../middleware/subscriptionMiddleware.js";
+import { sendAgoraChatMessage } from "../services/agoraChatService.js";
 import {
   createPersistentMessage,
   getRoomLinkForParticipant,
@@ -275,26 +276,22 @@ export default function createChatRoutes(io) {
 
       console.log(`[chat/save] ✓ msgId=${message._id} room=${req.params.roomId} from=${senderId}(${senderRole})`);
       const payload = serializeMessage(message);
-      // 1. Deliver to anyone currently in the chat room (both sides if open).
-      io.to(req.params.roomId).emit("new_message", payload);
-      // 2. Push to recipient's personal room so their global socket refreshes
-      //    the session list even when they are not in the chat screen.
-      io.to(buildPersonalRoom(recipientRole, recipientUid)).emit("new_message", payload);
-      // 3. Push to sender's personal room as well — ensures the sender's socket
-      //    gets the echo even if join_room hasn't been confirmed yet (race condition).
-      io.to(buildPersonalRoom(senderRole, senderId)).emit("new_message", payload);
-      // Legacy badge/unread event kept for any listeners that still use it.
-      io.to(buildPersonalRoom(recipientRole, recipientUid)).emit("message_unread", {
-        roomId: req.params.roomId,
-        message: payload,
-      });
+
+      // ── Real-time delivery via Agora Chat (replaces Socket.IO new_message) ───
+      // Fire-and-forget: message is already in MongoDB; Agora Chat queues delivery
+      // for offline recipients automatically.
+      sendAgoraChatMessage({
+        fromUid: senderId,
+        toUid:   recipientUid,
+        payload,
+      }).catch(() => {});
+
+      // ── Session list refresh (Socket.IO — chat list badges, not message body) ─
       // Push session list refresh using the just-saved message as preview (avoids
       // 2 aggregate queries). Run 2 count queries in parallel for unread badges.
       _emitSessionUpdated(io, req.params.roomId, link, payload);
 
       // Respond immediately — FCM/notification runs after the response is flushed.
-      // Previously createNotification was awaited before res.json(), adding 150-500ms
-      // of FCM latency to every message. Fire-and-forget eliminates that block entirely.
       res.status(201).json({ message: payload });
 
       // Skip standard "New Message" push for missed-call entries — the caller
@@ -363,13 +360,14 @@ export default function createChatRoutes(io) {
       });
 
       const payload = serializeMessage(message);
-      io.to(req.params.roomId).emit("new_message", payload);
-      io.to(buildPersonalRoom(recipientRole, recipientUid)).emit("new_message", payload);
-      io.to(buildPersonalRoom(senderRole, senderId)).emit("new_message", payload);
-      io.to(buildPersonalRoom(recipientRole, recipientUid)).emit("message_unread", {
-        roomId: req.params.roomId,
-        message: payload,
-      });
+
+      // ── Real-time delivery via Agora Chat ─────────────────────────────────
+      sendAgoraChatMessage({
+        fromUid: senderId,
+        toUid:   recipientUid,
+        payload,
+      }).catch(() => {});
+
       _emitSessionUpdated(io, req.params.roomId, link, payload);
 
       // Respond before FCM — notification latency (100-2000 ms) must not block
