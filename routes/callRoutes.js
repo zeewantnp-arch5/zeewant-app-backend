@@ -96,7 +96,7 @@ router.get("/livekit-token", async (req, res) => {
       return res.status(503).json({ message: "LiveKit server not configured (LIVEKIT_URL missing)" });
     }
 
-    const token = generateLiveKitToken({
+    const token = await generateLiveKitToken({
       roomName: room,
       participantIdentity: userId,
       participantName: userName || userId,

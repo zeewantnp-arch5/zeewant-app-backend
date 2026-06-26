@@ -1026,6 +1026,7 @@ export function registerRealtimeServer(io) {
       );
 
       try {
+        const _t0 = Date.now();
         const callEvent = await createCallEvent({
           roomId,
           callerId,
@@ -1037,6 +1038,7 @@ export function registerRealtimeServer(io) {
           status: isReceiverOnline ? "incoming" : "missed",
           livekitRoom: livekitRoom || null,
         });
+        console.log(`[CallPerf] call_initiate: callEvent created in ${Date.now() - _t0}ms`);
 
         const callEventId = String(callEvent._id);
 
@@ -1074,6 +1076,7 @@ export function registerRealtimeServer(io) {
 
         // Generate LiveKit access tokens for both parties.
         // generateLiveKitToken is async in livekit-server-sdk v2.x — must be awaited.
+        const _t1 = Date.now();
         const [callerToken, receiverToken] = await Promise.all([
           generateLiveKitToken({
             roomName: livekitRoom,
@@ -1086,6 +1089,7 @@ export function registerRealtimeServer(io) {
             participantName: null,
           }),
         ]);
+        console.log(`[CallPerf] call_initiate: tokens generated in ${Date.now() - _t1}ms`);
 
         if (!callerToken || !receiverToken) {
           console.error("[call_initiate] token generation failed — check LIVEKIT_API_KEY/LIVEKIT_API_SECRET env vars");
@@ -1115,6 +1119,7 @@ export function registerRealtimeServer(io) {
           livekitToken: callerToken,
           livekitUrl,
         });
+        console.log(`[CallPerf] call_initiate: total flow ${Date.now() - _t0}ms`);
       } catch (err) {
         console.error(`[call_initiate] error: ${err.message}`);
         emitSocketError(socket, err.message);
