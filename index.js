@@ -56,7 +56,6 @@ const io = new Server(httpServer, {
   // browser/older builds use polling→WS upgrade.
   transports: ["polling", "websocket"],
   // pingInterval: how often the server sends a heartbeat to the client.
-  // Set to 25 s so Render's 30 s idle-connection timeout is never hit.
   pingInterval: 25000,
   // pingTimeout: how long to wait for a pong before declaring the socket dead.
   // 60 s gives mobile clients time to respond after backgrounding / network switch.
@@ -87,7 +86,7 @@ app.use("/api", (req, res, next) => {
   });
 });
 
-// Log requests that take longer than 3 s so slow endpoints are visible in Render logs
+// Log requests that take longer than 3 s
 app.use((req, _res, next) => {
   const start = Date.now();
   _res.on("finish", () => {
@@ -141,13 +140,13 @@ app.get("/health", (_req, res) => {
   });
 });
 
-// Debug endpoint — shows masked env vars so you can confirm Render picked them up
+// Debug endpoint — shows masked env vars
 app.get("/debug/env", (_req, res) => {
   const mask = (v) => v ? `${v.slice(0, 6)}...${v.slice(-4)} (len=${v.length})` : "NOT SET";
   res.json({
     KHALTI_BASE_URL:   process.env.KHALTI_BASE_URL  || "NOT SET",
     KHALTI_SECRET_KEY: mask(process.env.KHALTI_SECRET_KEY),
-    BACKEND_URL:       process.env.BACKEND_URL       || process.env.RENDER_EXTERNAL_URL || "NOT SET",
+    BACKEND_URL:       process.env.BACKEND_URL       || "NOT SET",
     NODE_ENV:          process.env.NODE_ENV          || "NOT SET",
   });
 });
@@ -157,21 +156,6 @@ const PORT = process.env.PORT || 5000;
 function startHttpServer() {
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Server listening on port ${PORT} (bootstrap in progress)`);
-
-    // Render free tier spins down after 15 min of no incoming traffic.
-    // Ping our own /health endpoint every 14 min so the server stays awake.
-    const selfPingUrl =
-      process.env.RENDER_EXTERNAL_URL ||
-      process.env.BACKEND_URL ||
-      `http://localhost:${PORT}`;
-
-    setInterval(async () => {
-      try {
-        await fetch(`${selfPingUrl}/health`, { signal: AbortSignal.timeout(10000) });
-      } catch (_) {
-        // Non-fatal — server is already awake; ping just keeps Render's timer reset
-      }
-    }, 14 * 60 * 1000); // every 14 minutes
   });
 }
 

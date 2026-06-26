@@ -368,7 +368,7 @@ router.get("/test-email", async (_req, res) => {
 
 // ─── GET /api/admin/test-email?key=...&to=... ────────────────────────────────
 // Sends a test email via nodemailer. Use this to verify MAIL_USER/MAIL_PASS on Render.
-// Example: https://zeewant-app-backend.onrender.com/api/admin/test-email?key=zeewant_setup_2026&to=your@email.com
+// Example: https://api.zeewant.com/api/admin/test-email?key=zeewant_setup_2026&to=your@email.com
 router.get("/test-email", async (req, res) => {
   const expectedKey = process.env.ADMIN_SETUP_SECRET;
   const providedKey = req.query.key || req.headers["x-debug-key"];
@@ -399,7 +399,7 @@ router.get("/test-email", async (req, res) => {
       code: err.code ?? null,
       mailUser,
       passLength: mailPass ? mailPass.length : 0,
-      hint: "If code is EAUTH / 535: wrong App Password on Render. Regenerate at myaccount.google.com → Security → App passwords",
+      hint: "If code is EAUTH / 535: wrong App Password. Regenerate at myaccount.google.com → Security → App passwords",
     });
   }
 });
@@ -2046,7 +2046,7 @@ router.patch(
       // Respond immediately — don't block on FCM / audit log
       res.json({ message: "Post approved and published to explore feed", status: "approved" });
 
-      // Fire-and-forget: socket, notification, audit (non-blocking so Render doesn't timeout)
+      // Fire-and-forget: socket, notification, audit (non-blocking)
       const io = req.app.get("io");
       if (io) {
         io.emit("post_approved", {

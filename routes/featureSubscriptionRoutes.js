@@ -17,7 +17,7 @@ const ESEWA_MERCHANT_CODE = process.env.ESEWA_MERCHANT_CODE || "EPAYTEST";
 const ESEWA_SECRET        = process.env.ESEWA_SECRET        || "8gBm/:&EnhH.1/q";
 const ESEWA_BASE_URL      = process.env.ESEWA_BASE_URL      || "https://rc-epay.esewa.com.np";
 const BACKEND_URL         = (
-  process.env.BACKEND_URL || process.env.RENDER_EXTERNAL_URL || "http://localhost:5000"
+  process.env.BACKEND_URL || "http://localhost:5000"
 ).replace(/\/+$/, "");
 
 const VALID_FEATURES = new Set(["soulway", "souljar"]);

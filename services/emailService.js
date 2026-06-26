@@ -21,7 +21,7 @@ async function sendEmail({ to, subject, html, text }) {
   const user = process.env.SMTP_USERNAME || process.env.MAIL_USER;
   const pass = process.env.SMTP_PASSWORD || process.env.MAIL_PASS;
   if (!user || !pass) {
-    throw new Error("Email not configured. Set RESEND_API_KEY on Render.");
+    throw new Error("Email not configured. Set SMTP_USERNAME and SMTP_PASSWORD env vars.");
   }
   const transporter = nodemailer.createTransport({ service: "gmail", auth: { user, pass } });
   const from = process.env.SMTP_FROM_ADDRESS || user;

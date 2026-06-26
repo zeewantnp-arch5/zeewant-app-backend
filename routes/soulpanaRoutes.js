@@ -12,7 +12,7 @@ import { syncCommentInteractionToRTDB, syncCommentToRTDB, syncEngagementToRTDB }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// ── Ensure upload directory exists (Render's filesystem is ephemeral) ─────────
+// ── Ensure upload directory exists ────────────────────────────────────────────
 const UPLOAD_DIR = path.join(__dirname, "../uploads/soulpana");
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 

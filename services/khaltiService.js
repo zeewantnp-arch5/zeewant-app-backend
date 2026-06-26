@@ -1,9 +1,7 @@
 const KHALTI_SECRET_KEY = (process.env.KHALTI_SECRET_KEY || "").trim();
 const KHALTI_BASE_URL = (process.env.KHALTI_BASE_URL || "").trim();
-// Render auto-injects RENDER_EXTERNAL_URL; fall back to BACKEND_URL for local dev.
 const BACKEND_URL = (
   process.env.BACKEND_URL ||
-  process.env.RENDER_EXTERNAL_URL ||
   "http://localhost:5000"
 ).trim().replace(/\/+$/, "");
 

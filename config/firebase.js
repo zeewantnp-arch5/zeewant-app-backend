@@ -10,7 +10,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 let serviceAccount;
 try {
   if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-    // Production (Render.com): credentials passed as env var
+    // Production: credentials passed as env var
     serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
   } else {
     // Local dev: read from file
