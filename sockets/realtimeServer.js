@@ -171,32 +171,16 @@ function resolveRole(socket, payloadRole, userId) {
 }
 
 async function validateRoomAccess(roomId, userId, userRole) {
-  if (!roomId || !userId || !userRole) {
-    return null;
-  }
-
-  // Allow active, pending, AND ended — participants can always re-open a room
-  // to read history even after a session ends.
-  const link = await StudentSoulteeLink.findOne({
-    _id: roomId,
-    status: { $in: ["active", "pending", "ended"] },
-  })
-    .select("studentFirebaseUid soulteeFirebaseUid status")
-    .lean();
-
-  if (!link) {
-    return null;
-  }
-
-  if (userRole === "student" && link.studentFirebaseUid === userId) {
-    return link;
-  }
-
-  if (userRole === "soultee" && link.soulteeFirebaseUid === userId) {
-    return link;
-  }
-
-  return null;
+  if (!roomId || !userId || !userRole) return null;
+  // Reuse the LRU-cached lookup from messageService (2-min TTL for active rooms).
+  // Allows ended/pending rooms so users can re-read history after a session ends.
+  return getRoomLinkForParticipant({
+    roomId,
+    userId,
+    userRole,
+    allowPending: true,
+    allowEnded: true,
+  });
 }
 
 function ensureJoinedRoom(socket, roomId) {
@@ -239,44 +223,56 @@ async function flushPendingMessages(io, userId, userRole) {
   console.log(`[flush] pushed ${undelivered.length} pending messages to ${userRole}:${userId}`);
 }
 
-// ── Helper: fetch latest-message + unread count for a room, then push
-//           a session_updated event to both participants ─────────────────────
-async function pushSessionUpdate(io, roomId, studentUid, soulteeUid) {
+// ── Helper: push session_updated to both participants.
+// When savedMsg is provided (the just-saved message), it is used directly as
+// latestMessage, eliminating 1 aggregate query.  Unread counts use parallel
+// countDocuments instead of 2 full aggregates — ~3x faster on large collections.
+async function pushSessionUpdate(io, roomId, studentUid, soulteeUid, savedMsg = null) {
   try {
-    const metaMap = await getRoomMessageMetadata({
-      roomIds: [String(roomId)],
-      recipientUid: null, // fetch for both sides below
-      recipientRole: null,
-    });
-    const base = metaMap.get(String(roomId)) || {};
-
-    // Unread counts per participant
-    const [studentMeta, soulteeeMeta] = await Promise.all([
-      getRoomMessageMetadata({
+    let latestMessage = null;
+    if (savedMsg) {
+      // Build a lightweight preview from the message we already have in memory
+      latestMessage = {
+        _id: savedMsg._id,
+        text: savedMsg.text,
+        type: savedMsg.type,
+        senderId: savedMsg.senderId,
+        senderName: savedMsg.senderName,
+        senderRole: savedMsg.senderRole,
+        createdAt: savedMsg.createdAt,
+        readAt: null,
+      };
+    } else {
+      // Fallback: fetch from DB (e.g. after a delete operation)
+      const metaMap = await getRoomMessageMetadata({
         roomIds: [String(roomId)],
+        recipientUid: null,
+        recipientRole: null,
+      });
+      latestMessage = (metaMap.get(String(roomId)) || {}).latestMessage || null;
+    }
+
+    // countDocuments is significantly faster than a group-aggregate for unread counts
+    const [studentUnread, soulteeUnread] = await Promise.all([
+      Message.countDocuments({
+        roomId: String(roomId),
         recipientUid: studentUid,
         recipientRole: "student",
+        readAt: null,
+        deletedForUsers: { $nin: [studentUid] },
       }),
-      getRoomMessageMetadata({
-        roomIds: [String(roomId)],
+      Message.countDocuments({
+        roomId: String(roomId),
         recipientUid: soulteeUid,
         recipientRole: "soultee",
+        readAt: null,
+        deletedForUsers: { $nin: [soulteeUid] },
       }),
     ]);
 
-    const payload = {
-      roomId: String(roomId),
-      latestMessage: base.latestMessage || null,
-    };
-
-    io.to(buildPersonalRoom("student", studentUid)).emit("session_updated", {
-      ...payload,
-      unreadCount: (studentMeta.get(String(roomId)) || {}).unreadCount || 0,
-    });
-    io.to(buildPersonalRoom("soultee", soulteeUid)).emit("session_updated", {
-      ...payload,
-      unreadCount: (soulteeeMeta.get(String(roomId)) || {}).unreadCount || 0,
-    });
+    const payload = { roomId: String(roomId), latestMessage };
+    io.to(buildPersonalRoom("student", studentUid)).emit("session_updated", { ...payload, unreadCount: studentUnread });
+    io.to(buildPersonalRoom("soultee", soulteeUid)).emit("session_updated",  { ...payload, unreadCount: soulteeUnread });
   } catch (err) {
     console.error("[session_updated] push failed:", err.message);
   }
@@ -527,7 +523,8 @@ export function registerRealtimeServer(io) {
         replyToText: replyToText || null,
         replyToSenderName: replyToSenderName || null,
       }).then((savedMsg) => {
-        pushSessionUpdate(io, roomId, link.studentFirebaseUid, link.soulteeFirebaseUid);
+        // Pass savedMsg so pushSessionUpdate skips the latestMessage DB query
+        pushSessionUpdate(io, roomId, link.studentFirebaseUid, link.soulteeFirebaseUid, savedMsg);
         createNotification(io, {
           recipientUid, recipientRole,
           type: "new_message",

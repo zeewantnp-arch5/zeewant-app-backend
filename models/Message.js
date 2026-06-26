@@ -53,5 +53,9 @@ const messageSchema = new mongoose.Schema(
 messageSchema.index({ roomId: 1, createdAt: -1 });
 messageSchema.index({ recipientUid: 1, recipientRole: 1, status: 1, createdAt: -1 });
 messageSchema.index({ roomId: 1, status: 1 });
+// Optimised for markRoomMessagesRead (updateMany on roomId+recipientUid+readAt)
+messageSchema.index({ roomId: 1, recipientUid: 1, readAt: 1 });
+// Optimised for markRoomMessagesDelivered (updateMany on roomId+recipientUid+status)
+messageSchema.index({ roomId: 1, recipientUid: 1, status: 1 });
 
 export default mongoose.model("Message", messageSchema);

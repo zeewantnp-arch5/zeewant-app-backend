@@ -45,44 +45,100 @@ const attachmentUpload = multer({
   limits: { fileSize: 20 * 1024 * 1024 },
 });
 
-// Returns true when messages must be blocked for this room.
-// Checks (cheapest first):
-//   1. chatLocked flag explicitly set (timer-expired sessions)
-//   2. link.status === "ended" (manual end-session route)
-//   3. Any paid session completed for this pair (old sessions before chatLocked existed)
-// An active follow-up OTP (status=USED, not expired) overrides all of the above.
+// Per-room lock-status cache: avoids 2-4 MongoDB queries on every HTTP message.
+// Only "not locked" results are cached — locked rooms always re-check (rare case).
+// TTL: 30 seconds. Cleared automatically on next request after expiry.
+const _lockCache = new Map(); // roomId → { ts: number }
+const _LOCK_TTL = 30_000;
+
+export function invalidateChatLockCache(roomId) {
+  _lockCache.delete(String(roomId));
+}
+
 async function isChatLocked(roomId) {
-  const link = await StudentSoulteeLink.findOne({ _id: roomId }).lean();
-  if (!link) return false; // unknown room — let messageService handle access
+  const key = String(roomId);
 
-  // Fast path: explicit lock flags
-  const rawLocked = link.chatLocked === true || link.status === "ended";
+  // Return cached "not locked" result within TTL
+  const cached = _lockCache.get(key);
+  if (cached && Date.now() - cached.ts < _LOCK_TTL) return false;
 
-  // If locked, check whether an active follow-up OTP overrides it
-  if (rawLocked) {
+  const link = await StudentSoulteeLink.findOne(
+    { _id: roomId },
+    "chatLocked status soulteeFirebaseUid studentFirebaseUid"
+  ).lean();
+  if (!link) return false; // unknown room — messageService handles access denial
+
+  // Active sessions are never locked unless chatLocked is explicitly set.
+  // Previously, every active-session message triggered a Session.findOne() slow path
+  // that always returned "not completed" for active sessions — pure wasted overhead.
+  if (link.status === "active" && link.chatLocked !== true) {
+    _lockCache.set(key, { ts: Date.now() });
+    return false;
+  }
+
+  // Explicit lock flags (ended or timer-expired session)
+  if (link.chatLocked === true || link.status === "ended") {
     const activeFollowUp = await FollowUpOtp.exists({
-      roomId: String(roomId),
+      roomId: key,
       status: "USED",
       expiresAt: { $gt: new Date() },
     });
-    return !activeFollowUp;
+    if (activeFollowUp) {
+      // Follow-up unlocks the room — cache as unlocked
+      _lockCache.set(key, { ts: Date.now() });
+      return false;
+    }
+    return true;
   }
 
-  // Slow path: old sessions where chatLocked was never set.
-  // Only lock if the LATEST session is completed — a new payment creates a new
-  // active session which must override the old completed one.
+  // Slow path: pending sessions where chatLocked was never explicitly set.
+  // Only reaches here for link.status === "pending" (not active, not ended).
   const latestSession = await Session.findOne({
     soulteeFirebaseUid: link.soulteeFirebaseUid,
     studentFirebaseUid: link.studentFirebaseUid,
   }).sort({ createdAt: -1 }).lean();
-  if (!latestSession || latestSession.status !== "completed") return false;
+
+  if (!latestSession || latestSession.status !== "completed") {
+    _lockCache.set(key, { ts: Date.now() });
+    return false;
+  }
 
   const activeFollowUp = await FollowUpOtp.exists({
-    roomId: String(roomId),
+    roomId: key,
     status: "USED",
     expiresAt: { $gt: new Date() },
   });
-  return !activeFollowUp;
+  if (activeFollowUp) {
+    _lockCache.set(key, { ts: Date.now() });
+    return false;
+  }
+  return true;
+}
+
+// Fire-and-forget: push session_updated to both participants using the already-known
+// message as latestMessage preview (avoids re-querying the DB for a message we just
+// saved) and parallel countDocuments for unread badges (faster than aggregates).
+function _emitSessionUpdated(io, roomId, link, latestMessagePayload) {
+  const studentUid = link.studentFirebaseUid;
+  const soulteeUid = link.soulteeFirebaseUid;
+  const preview = {
+    _id: latestMessagePayload._id,
+    text: latestMessagePayload.text,
+    type: latestMessagePayload.type,
+    senderId: latestMessagePayload.senderId,
+    senderName: latestMessagePayload.senderName,
+    senderRole: latestMessagePayload.senderRole,
+    createdAt: latestMessagePayload.createdAt,
+    readAt: null,
+  };
+  Promise.all([
+    Message.countDocuments({ roomId: String(roomId), recipientUid: studentUid, recipientRole: "student", readAt: null }),
+    Message.countDocuments({ roomId: String(roomId), recipientUid: soulteeUid,  recipientRole: "soultee",  readAt: null }),
+  ]).then(([studentUnread, soulteeUnread]) => {
+    const base = { roomId: String(roomId), latestMessage: preview };
+    io.to(buildPersonalRoom("student", studentUid)).emit("session_updated", { ...base, unreadCount: studentUnread });
+    io.to(buildPersonalRoom("soultee", soulteeUid)).emit("session_updated",  { ...base, unreadCount: soulteeUnread });
+  }).catch(() => {});
 }
 
 export default function createChatRoutes(io) {
@@ -202,7 +258,7 @@ export default function createChatRoutes(io) {
         ? { url: attachmentUrl, name: attachmentName || null, mimeType: attachmentMimeType || null }
         : null;
 
-      const { message, recipientUid, recipientRole } = await createPersistentMessage({
+      const { link, message, recipientUid, recipientRole } = await createPersistentMessage({
         roomId: req.params.roomId,
         senderId,
         senderName,
@@ -232,23 +288,9 @@ export default function createChatRoutes(io) {
         roomId: req.params.roomId,
         message: payload,
       });
-      // Push session list refresh to both sides (new preview + updated badge count)
-      getRoomMessageMetadata({
-        roomIds: [req.params.roomId],
-        recipientUid,
-        recipientRole,
-      }).then((metaMap) => {
-        const meta = metaMap.get(req.params.roomId) || {};
-        const base = { roomId: req.params.roomId, latestMessage: meta.latestMessage || payload };
-        io.to(buildPersonalRoom(recipientRole, recipientUid)).emit("session_updated", {
-          ...base,
-          unreadCount: meta.unreadCount || 0,
-        });
-        io.to(buildPersonalRoom(senderRole, senderId)).emit("session_updated", {
-          ...base,
-          unreadCount: 0, // sender has no unread for their own message
-        });
-      }).catch(() => {});
+      // Push session list refresh using the just-saved message as preview (avoids
+      // 2 aggregate queries). Run 2 count queries in parallel for unread badges.
+      _emitSessionUpdated(io, req.params.roomId, link, payload);
 
       // Respond immediately — FCM/notification runs after the response is flushed.
       // Previously createNotification was awaited before res.json(), adding 150-500ms
@@ -304,7 +346,7 @@ export default function createChatRoutes(io) {
       const baseUrl = `${req.protocol}://${req.get("host")}`;
       const fileUrl = `${baseUrl}/uploads/chat/${req.file.filename}`;
 
-      const { message, recipientUid, recipientRole } = await createPersistentMessage({
+      const { link, message, recipientUid, recipientRole } = await createPersistentMessage({
         roomId: req.params.roomId,
         senderId,
         senderName,
@@ -328,8 +370,13 @@ export default function createChatRoutes(io) {
         roomId: req.params.roomId,
         message: payload,
       });
+      _emitSessionUpdated(io, req.params.roomId, link, payload);
 
-      await createNotification(io, {
+      // Respond before FCM — notification latency (100-2000 ms) must not block
+      // the HTTP response that the sender is waiting for.
+      res.status(201).json({ message: payload });
+
+      createNotification(io, {
         recipientUid,
         recipientRole,
         type: "new_message",
@@ -342,9 +389,7 @@ export default function createChatRoutes(io) {
           senderRole,
           messageType: normalizedType,
         },
-      });
-
-      res.status(201).json({ message: payload });
+      }).catch(() => {});
     } catch (err) {
       const statusCode = err.message === "Room access denied" ? 403 : 500;
       res.status(statusCode).json({ message: err.message });
