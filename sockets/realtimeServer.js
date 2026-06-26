@@ -25,6 +25,7 @@ import {
   listPendingMissedCallsForUser,
   markMissedCallsNotified,
   buildCallEventText,
+  getCallEventById,
 } from "../services/callEventService.js";
 import { generateAgoraRtcToken, getAgoraAppId } from "../services/agoraRtcService.js";
 
@@ -1050,6 +1051,22 @@ export function registerRealtimeServer(io) {
         const callEventId = String(callEvent._id);
 
         if (!isReceiverOnline) {
+          // System message in the chat room so both parties see the missed call
+          logSystemCallMessage({
+            io,
+            roomId,
+            actorId: callerId,
+            actorName: resolvedCallerName,
+            actorRole: callerRole,
+            text: buildCallEventText({
+              status: "missed",
+              callType: isVideo ? "video" : "audio",
+              actorName: resolvedCallerName,
+            }),
+          }).catch((err) =>
+            console.error(`[call] missed-call system message failed: ${err.message}`)
+          );
+
           createNotification(io, {
             recipientUid: to,
             recipientRole: receiverRole,
@@ -1072,7 +1089,7 @@ export function registerRealtimeServer(io) {
             console.error(`[call] FCM missed-call notification failed: ${err.message}`)
           );
 
-          console.log(`📵 call_unavailable: receiver ${to} is offline, missed-call FCM sent`);
+          console.log(`📵 call_unavailable: receiver ${to} is offline — missed-call system message + FCM sent`);
 
           return socket.emit("call_unavailable", {
             roomId,
@@ -1160,11 +1177,34 @@ export function registerRealtimeServer(io) {
     socket.on("call_rejected", async ({ to, agoraChannel, callEventId }) => {
       const receiverRole = socket.data.role;
       const callerRole = receiverRole === "student" ? "soultee" : "student";
-      console.log(`❌ call_rejected: receiver=${socket.data.userId} → caller=${to}`);
+      console.log(`❌ call_rejected: receiver=${socket.data.userId} → caller=${to} callEventId=${callEventId}`);
 
+      // Fetch callEvent before updating to get roomId and callType for system message.
+      let callEventDoc = null;
       try {
-        if (callEventId) await markCallRejected(callEventId);
+        if (callEventId) {
+          callEventDoc = await getCallEventById(callEventId);
+          await markCallRejected(callEventId);
+        }
       } catch (_) { /* non-fatal */ }
+
+      // Create a "call declined" system message in the chat.
+      if (callEventDoc?.roomId) {
+        logSystemCallMessage({
+          io,
+          roomId: callEventDoc.roomId,
+          actorId: socket.data.userId,
+          actorName: socket.data.userName || socket.data.userId || "User",
+          actorRole: socket.data.role,
+          text: buildCallEventText({
+            status: "rejected",
+            callType: callEventDoc.callType || "audio",
+            actorName: socket.data.userName || socket.data.userId,
+          }),
+        }).catch((err) =>
+          console.error(`[call] rejected system message failed: ${err.message}`)
+        );
+      }
 
       if (to) {
         io.to(buildPersonalRoom(callerRole, to)).emit("call_rejected", {
@@ -1183,11 +1223,35 @@ export function registerRealtimeServer(io) {
     socket.on("call_cancelled", async ({ to, agoraChannel, callEventId }) => {
       const callerRole = socket.data.role;
       const receiverRole = callerRole === "student" ? "soultee" : "student";
-      console.log(`🚫 call_cancelled: caller=${socket.data.userId} → receiver=${to}`);
+      const callerName = socket.data.userName || socket.data.userId || "Caller";
+      console.log(`🚫 call_cancelled: caller=${socket.data.userId}(${callerName}) → receiver=${to} callEventId=${callEventId}`);
 
+      // Fetch callEvent before updating — we need roomId and callType for the system message.
+      let callEventDoc = null;
       try {
-        if (callEventId) await markCallCancelled(callEventId);
+        if (callEventId) {
+          callEventDoc = await getCallEventById(callEventId);
+          await markCallCancelled(callEventId);
+        }
       } catch (_) { /* non-fatal */ }
+
+      // Create a "Missed call" system message in the chat (receiver was online but didn't answer).
+      if (callEventDoc?.roomId) {
+        logSystemCallMessage({
+          io,
+          roomId: callEventDoc.roomId,
+          actorId: callEventDoc.callerId || socket.data.userId,
+          actorName: callEventDoc.callerName || callerName,
+          actorRole: callEventDoc.callerRole || callerRole,
+          text: buildCallEventText({
+            status: "missed",
+            callType: callEventDoc.callType || "audio",
+            actorName: callEventDoc.callerName || callerName,
+          }),
+        }).catch((err) =>
+          console.error(`[call] cancelled system message failed: ${err.message}`)
+        );
+      }
 
       if (to) {
         io.to(buildPersonalRoom(receiverRole, to)).emit("call_cancelled", {

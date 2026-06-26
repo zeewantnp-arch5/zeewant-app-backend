@@ -145,12 +145,18 @@ export async function getCallHistoryForRoom({ roomId, limit = 20 }) {
     .lean();
 }
 
+export async function getCallEventById(callEventId) {
+  if (!callEventId) return null;
+  return CallEvent.findById(callEventId).lean();
+}
+
 export function buildCallEventText({ status, callType, actorName }) {
   const typeLabel = callType === "video" ? "video" : "audio";
   const caller = actorName || "User";
 
   switch (status) {
     case "missed":
+    case "cancelled":
       return `Missed ${typeLabel} call from ${caller}`;
     case "accepted":
       return `${typeLabel} call accepted`;
