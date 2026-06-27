@@ -1235,13 +1235,8 @@ export function registerRealtimeServer(io) {
       let callEventDoc = null;
       try {
         if (callEventId) {
-<<<<<<< HEAD
           callEventDoc = await getCallEventById(callEventId);
           await markCallCancelled(callEventId);
-=======
-          await markCallCancelled(callEventId);
-          callEventDoc = await getCallEventById(callEventId);
->>>>>>> 118155f (modifued)
         }
       } catch (_) { /* non-fatal */ }
 
