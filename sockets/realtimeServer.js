@@ -296,8 +296,9 @@ export function registerRealtimeServer(io) {
       socket.data.userId = uid;
       socket.data.role = "student";
       socket.data.userName = name || uid;
-      socket.join(buildPersonalRoom("student", uid));
-      console.log(`🎓 Student online: ${name || uid} (${uid})`);
+      const personalRoom = buildPersonalRoom("student", uid);
+      socket.join(personalRoom);
+      console.log(`🎓 [Presence] Student online: ${name || uid} (${uid}) socketId=${socket.id} joined room="${personalRoom}" becameOnline=${becameOnline}`);
 
       if (becameOnline) {
         setStudentStatus(io, uid, "online");
@@ -337,8 +338,9 @@ export function registerRealtimeServer(io) {
       socket.data.userId = uid;
       socket.data.role = "soultee";
       socket.data.userName = name || uid;
-      socket.join(buildPersonalRoom("soultee", uid));
-      console.log(`🟢 Soultee online: ${name || uid} (${uid})`);
+      const personalRoomSoultee = buildPersonalRoom("soultee", uid);
+      socket.join(personalRoomSoultee);
+      console.log(`🟢 [Presence] Soultee online: ${name || uid} (${uid}) socketId=${socket.id} joined room="${personalRoomSoultee}" becameOnline=${becameOnline}`);
 
       if (becameOnline) {
         try {
@@ -442,6 +444,7 @@ export function registerRealtimeServer(io) {
         const statusEvent = peerRole === "soultee"
           ? "soultee_status_changed"
           : "student_status_changed";
+        console.log(`[join_room] peer ${peerUid}(${peerRole}) status=${peerStatus} → emitting ${statusEvent} to joiner`);
         socket.emit(statusEvent, {
           uid:        peerUid,
           status:     peerStatus,
