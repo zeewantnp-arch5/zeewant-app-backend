@@ -1047,7 +1047,7 @@ export function registerRealtimeServer(io) {
           receiverRole,
           callType: isVideo ? "video" : "audio",
           status: isReceiverOnline ? "incoming" : "missed",
-          livekitRoom: agoraChannel || null,
+          agoraChannel: agoraChannel || null,
         });
         console.log(`[CallPerf] call_initiate: callEvent created in ${Date.now() - _t0}ms`);
 
@@ -1088,9 +1088,11 @@ export function registerRealtimeServer(io) {
               callEventId,
               missed: "true",
             },
-          }).catch((err) =>
-            console.error(`[call] FCM missed-call notification failed: ${err.message}`)
-          );
+          })
+            .then(() => markMissedCallsNotified([callEvent._id]))
+            .catch((err) =>
+              console.error(`[call] FCM missed-call notification failed: ${err.message}`)
+            );
 
           console.log(`📵 call_unavailable: receiver ${to} is offline — missed-call system message + FCM sent`);
 
@@ -1233,8 +1235,13 @@ export function registerRealtimeServer(io) {
       let callEventDoc = null;
       try {
         if (callEventId) {
+<<<<<<< HEAD
           callEventDoc = await getCallEventById(callEventId);
           await markCallCancelled(callEventId);
+=======
+          await markCallCancelled(callEventId);
+          callEventDoc = await getCallEventById(callEventId);
+>>>>>>> 118155f (modifued)
         }
       } catch (_) { /* non-fatal */ }
 
@@ -1265,6 +1272,31 @@ export function registerRealtimeServer(io) {
           state: "cancelled",
           callEventId,
         });
+      }
+
+      if (callEventDoc?.roomId && to) {
+        createNotification(io, {
+          recipientUid: to,
+          recipientRole: receiverRole,
+          type: "call_incoming",
+          title: callEventDoc.callType === "video" ? "Missed video call" : "Missed voice call",
+          body: `${callEventDoc.callerName || callerName} tried to call you`,
+          data: {
+            roomId: String(callEventDoc.roomId),
+            callerId: String(callEventDoc.callerId || socket.data.userId || ""),
+            callerRole: String(callEventDoc.callerRole || callerRole || ""),
+            callerName: String(callEventDoc.callerName || callerName),
+            callType: String(callEventDoc.callType || "audio"),
+            isVideo: String((callEventDoc.callType || "audio") === "video"),
+            agoraChannel: String(agoraChannel || callEventDoc.agoraChannel || ""),
+            callEventId: String(callEventId || ""),
+            missed: "true",
+          },
+        })
+          .then(() => markMissedCallsNotified([callEventDoc._id]))
+          .catch((err) =>
+            console.error(`[call] missed-call notification failed: ${err.message}`)
+          );
       }
     });
 

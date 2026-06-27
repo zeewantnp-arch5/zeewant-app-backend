@@ -100,11 +100,15 @@ export async function markMissedCallsNotified(callEventIds) {
 
 export async function markCallCancelled(callEventId) {
   if (!callEventId) return null;
-  return CallEvent.findByIdAndUpdate(
-    callEventId,
-    { status: "cancelled", endedAt: new Date() },
-    { new: true }
-  );
+  const current = await CallEvent.findById(callEventId);
+  if (!current) return null;
+
+  current.status = current.answeredAt ? "ended" : "missed";
+  current.endedAt = new Date();
+  current.durationSec = 0;
+  await current.save();
+
+  return current;
 }
 
 export async function markCallsSeen(callEventIds) {
