@@ -7,7 +7,8 @@ const ORG_NAME        = process.env.AGORA_CHAT_ORG_NAME;
 const APP_NAME        = process.env.AGORA_CHAT_APP_NAME;
 const CLIENT_ID       = process.env.AGORA_CHAT_CLIENT_ID;
 const CLIENT_SECRET   = process.env.AGORA_CHAT_CLIENT_SECRET;
-const REST_URL        = process.env.AGORA_CHAT_REST_URL || "https://a41.chat.agora.io";
+const REST_URL        = process.env.AGORA_CHAT_REST_URL || "https://a61.chat.agora.io";
+
 
 const BASE_URL = `${REST_URL}/${ORG_NAME}/${APP_NAME}`;
 
