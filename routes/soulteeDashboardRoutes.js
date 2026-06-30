@@ -1,4 +1,4 @@
-import express from "express";
+﻿import express from "express";
 import Soultee from "../models/Soultee.js";
 import SoulteeFeedback from "../models/SoulteeFeedback.js";
 import admin from "../config/firebase.js";
@@ -9,15 +9,9 @@ import SessionWithdrawal from "../models/SessionWithdrawal.js";
 import Souljar from "../models/souljar.js";
 import Soulpana from "../models/Soulpana.js";
 import { getStudentConnections } from "../services/connectionService.js";
-import {
-  createPersistentMessage,
-  getRoomMessageMetadata,
-  getUnreadMessageSummary,
-} from "../services/messageService.js";
 import { createNotification, emitToUser } from "../services/notificationService.js";
 import { syncProfileToRTDB } from "../config/firebase.js";
 import SystemSettings from "../models/SystemSettings.js";
-import CallEvent from "../models/CallEvent.js";
 
 const PLATFORM_COMMISSION_RATE = 10; // fallback if DB setting missing
 
@@ -364,7 +358,7 @@ export default function createSoulteeDashboardRoutes(io) {
       const pendingWd       = wallet?.pendingWithdrawals ?? 0;
       const availableBalance = Math.max(0, earnedSoFar - totalWithdrawn - pendingWd);
 
-      const { totalUnreadMessages } = await getUnreadMessageSummary({ userId: soulteeUid, userRole: "soultee" });
+      const totalUnreadMessages = 0;
 
       res.json({
         completedSessions:    completedCount,
@@ -455,19 +449,8 @@ export default function createSoulteeDashboardRoutes(io) {
         });
       }
 
-      if (String(requestMessage || "").trim()) {
-        await createPersistentMessage({
-          roomId: String(link._id),
-          senderId: studentFirebaseUid,
-          senderName: studentName || "Student",
-          senderRole: "student",
-          text: requestMessage,
-          allowPending: true,
-        });
-      }
-
       // Real-time: tell the soultee a new request arrived (for request list update)
-      io.to(`soultee:${soulteeFirebaseUid}`).emit("new_connection_request", {
+      io?.to(`soultee:${soulteeFirebaseUid}`)?.emit("new_connection_request", {
         linkId:            link._id,
         studentFirebaseUid,
         studentName:       studentName || "Student",
@@ -511,22 +494,7 @@ export default function createSoulteeDashboardRoutes(io) {
         .sort({ requestedAt: -1 })
         .lean();
 
-      const metadataByRoom = await getRoomMessageMetadata({
-        roomIds: requests.map((request) => String(request._id)),
-        recipientUid: req.params.soulteeUid,
-        recipientRole: "soultee",
-      });
-
-      const enrichedRequests = requests.map((request) => {
-        const metadata = metadataByRoom.get(String(request._id)) || {};
-        return {
-          ...request,
-          latestMessage: metadata.latestMessage || null,
-          unreadMessageCount: metadata.unreadCount || 0,
-        };
-      });
-
-      res.json({ requests: enrichedRequests, total: enrichedRequests.length });
+      res.json({ requests, total: requests.length });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
@@ -712,22 +680,7 @@ export default function createSoulteeDashboardRoutes(io) {
         })
       );
 
-      const metadataByRoom = await getRoomMessageMetadata({
-        roomIds: students.map((student) => student.roomId),
-        recipientUid: req.params.soulteeUid,
-        recipientRole: "soultee",
-      });
-
-      const enrichedStudents = students.map((student) => {
-        const metadata = metadataByRoom.get(student.roomId) || {};
-        return {
-          ...student,
-          latestMessage: metadata.latestMessage || null,
-          unreadMessageCount: metadata.unreadCount || 0,
-        };
-      });
-
-      res.json({ students: enrichedStudents, total: enrichedStudents.length });
+      res.json({ students, total: students.length });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
@@ -814,16 +767,7 @@ export default function createSoulteeDashboardRoutes(io) {
       const sessionStart = link.acceptedAt || link.requestedAt || now;
       const durationMinutes = Math.max(1, Math.round((now - new Date(sessionStart)) / 60000));
 
-      // Determine session type from the most recent call event in this room.
-      // CallEvent.callType is "video" or "audio"; map audio→voice to match Session.sessionType enum.
-      const recentCall = await CallEvent.findOne(
-        { roomId: link._id.toString() },
-        { callType: 1 },
-        { sort: { createdAt: -1 } }
-      ).lean();
-      const sessionType = recentCall
-        ? (recentCall.callType === "video" ? "video" : "voice")
-        : "chat";
+      const sessionType = "chat";
 
       // Complete existing payment session if one exists, otherwise create a new record
       const completedExisting = await Session.findOneAndUpdate(
@@ -850,12 +794,12 @@ export default function createSoulteeDashboardRoutes(io) {
       }
 
       // Refresh soultee dashboard stats
-      io.to(`soultee:${req.params.soulteeUid}`).emit("stats:updated");
+      io?.to(`soultee:${req.params.soulteeUid}`)?.emit("stats:updated");
 
       // Notify both participants that chat is now locked
-      io.to(link._id.toString()).emit("chat_locked", { roomId: link._id.toString() });
+      io?.to(link._id.toString())?.emit("chat_locked", { roomId: link._id.toString() });
       // Notify student's personal room so soultee_search_screen can hide Paid badge
-      io.to(`student:${req.params.studentUid}`).emit("session_ended", {
+      io?.to(`student:${req.params.studentUid}`)?.emit("session_ended", {
         soulteeFirebaseUid: req.params.soulteeUid,
         roomId: link._id.toString(),
       });
@@ -1376,12 +1320,12 @@ export default function createSoulteeDashboardRoutes(io) {
       );
       if (!session) return res.status(404).json({ message: "Session not found or already started" });
 
-      io.to(`session:${req.params.sessionId}`).emit("session:started", {
+      io?.to(`session:${req.params.sessionId}`)?.emit("session:started", {
         sessionId: req.params.sessionId,
         startedAt: session.startedAt,
         durationMinutes: session.durationMinutes,
       });
-      io.to(`soultee:${req.params.soulteeUid}`).emit("stats:updated");
+      io?.to(`soultee:${req.params.soulteeUid}`)?.emit("stats:updated");
 
       // Auto-complete after session duration expires
       const durationMs = (session.durationMinutes || 10) * 60 * 1000;
@@ -1398,8 +1342,8 @@ export default function createSoulteeDashboardRoutes(io) {
           s.platformEarnings = platformEarnings;
           // adminPaid remains false — wallet only moves when admin explicitly pays soultee
           await s.save();
-          io.to(`session:${req.params.sessionId}`).emit("session:completed", { sessionId: req.params.sessionId });
-          io.to(`soultee:${req.params.soulteeUid}`).emit("stats:updated");
+          io?.to(`session:${req.params.sessionId}`)?.emit("session:completed", { sessionId: req.params.sessionId });
+          io?.to(`soultee:${req.params.soulteeUid}`)?.emit("stats:updated");
           // Lock chat when timer expires
           const chatLink = await StudentSoulteeLink.findOneAndUpdate(
             { soulteeFirebaseUid: s.soulteeFirebaseUid, studentFirebaseUid: s.studentFirebaseUid, status: "active" },
@@ -1407,8 +1351,8 @@ export default function createSoulteeDashboardRoutes(io) {
             { new: true }
           );
           if (chatLink) {
-            io.to(chatLink._id.toString()).emit("chat_locked", { roomId: chatLink._id.toString() });
-            io.to(`student:${chatLink.studentFirebaseUid}`).emit("session_ended", {
+            io?.to(chatLink._id.toString())?.emit("chat_locked", { roomId: chatLink._id.toString() });
+            io?.to(`student:${chatLink.studentFirebaseUid}`)?.emit("session_ended", {
               soulteeFirebaseUid: chatLink.soulteeFirebaseUid,
               roomId: chatLink._id.toString(),
             });
@@ -1448,12 +1392,12 @@ export default function createSoulteeDashboardRoutes(io) {
       // adminPaid remains false — wallet only moves when admin explicitly pays soultee
       await session.save();
 
-      io.to(`session:${req.params.sessionId}`).emit("session:completed", {
+      io?.to(`session:${req.params.sessionId}`)?.emit("session:completed", {
         sessionId: req.params.sessionId,
       });
 
       // Push real-time dashboard refresh to the soultee
-      io.to(`soultee:${req.params.soulteeUid}`).emit("stats:updated");
+      io?.to(`soultee:${req.params.soulteeUid}`)?.emit("stats:updated");
 
       // Lock chat for this student-soultee pair
       const chatLink = await StudentSoulteeLink.findOneAndUpdate(
@@ -1462,8 +1406,8 @@ export default function createSoulteeDashboardRoutes(io) {
         { new: true }
       );
       if (chatLink) {
-        io.to(chatLink._id.toString()).emit("chat_locked", { roomId: chatLink._id.toString() });
-        io.to(`student:${chatLink.studentFirebaseUid}`).emit("session_ended", {
+        io?.to(chatLink._id.toString())?.emit("chat_locked", { roomId: chatLink._id.toString() });
+        io?.to(`student:${chatLink.studentFirebaseUid}`)?.emit("session_ended", {
           soulteeFirebaseUid: chatLink.soulteeFirebaseUid,
           roomId: chatLink._id.toString(),
         });

@@ -1,4 +1,4 @@
-import express from "express";
+﻿import express from "express";
 import multer from "multer";
 import SoulteeApplication, {
   computeCompletenessScore,
@@ -112,7 +112,7 @@ export default function createSoulteeApplicationRoutes(io) {
       }
 
       // Notify admin dashboard in real-time
-      io.to("admin:notifications").emit("new_soultee_application", {
+      io?.to("admin:notifications")?.emit("new_soultee_application", {
         applicationId:    application._id,
         applicantName:    name,
         category:         category || "",

@@ -20,7 +20,6 @@ import FeatureSubscription from "../models/FeatureSubscription.js";
 import SoulwayReport from "../models/SoulwayReport.js";
 import EmotionalPrescription from "../models/EmotionalPrescription.js";
 import PhoneAuth from "../models/PhoneAuth.js";
-import CallEvent from "../models/CallEvent.js";
 import SoulteeFeedback from "../models/SoulteeFeedback.js";
 import FollowUpCode from "../models/FollowUpCode.js";
 import SessionAccessCode from "../models/SessionAccessCode.js";
@@ -66,7 +65,6 @@ router.delete("/delete-account", async (req, res) => {
       SoulwayReport.deleteMany({ userId: uid }),
       EmotionalPrescription.deleteMany({ userId: uid }),
       PhoneAuth.deleteMany({ firebaseUid: uid }),
-      CallEvent.deleteMany({ $or: [{ callerId: uid }, { receiverId: uid }] }),
       SoulteeFeedback.deleteMany({ studentUid: uid }),
       FollowUpCode.deleteMany({ studentFirebaseUid: uid }),
       SessionAccessCode.deleteMany({ userId: uid }),

@@ -1,4 +1,4 @@
-import express from "express";
+﻿import express from "express";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import Soultee from "../models/Soultee.js";
@@ -10,7 +10,6 @@ import Payment from "../models/Payment.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import SoulteeApplication from "../models/SoulteeApplication.js";
 import admin from "../config/firebase.js";
-import { emitSouljarAnalyticsUpdate } from "../sockets/analyticsNamespace.js";
 
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
@@ -873,15 +872,12 @@ router.delete("/souljar/:id", requireAdmin, requireAnalyticsAccess, async (req, 
 
     const io = req.app.get("io");
     if (io) {
-      io.of("/analytics").to("analytics_room").emit("analytics_snapshot", {
+      io?.of("/analytics")?.to("analytics_room")?.emit("analytics_snapshot", {
         type: "souljar_deleted",
         ts: Date.now(),
         id: String(deleted._id),
       });
 
-      emitSouljarAnalyticsUpdate(io).catch((err) => {
-        console.error("Souljar analytics emit after delete error:", err.message);
-      });
     }
 
     return res.json({

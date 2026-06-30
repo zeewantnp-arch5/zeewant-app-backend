@@ -1,4 +1,4 @@
-import express from "express";
+﻿import express from "express";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
@@ -159,7 +159,7 @@ export default function createSoulpanaRoutes(io) {
         }).catch((e) => console.error("[Soulpana notify soultee] error:", e.message));
       } else {
         // No specific soultee → broadcast socket to all; FCM to every soultee
-        io.emit("emotional_question_submitted", payload);
+        io?.emit("emotional_question_submitted", payload);
         Soultee.find({}).select("firebaseUid").lean()
           .then((soultees) => {
             soultees.forEach(({ firebaseUid }) => {
@@ -295,14 +295,14 @@ export default function createSoulpanaRoutes(io) {
           respondedByName: authorName,
           respondedAt: new Date(),
         });
-        io.emit("emotional_question_answered", { questionId });
+        io?.emit("emotional_question_answered", { questionId });
       }
 
       const commentData = comment.toObject();
 
       // Emit to the question's socket room so both parties get it live
-      io.to(`question:${questionId}`).emit("new_comment", commentData);
-      io.to(`question:${questionId}`).emit("comment_interaction_updated", {
+      io?.to(`question:${questionId}`)?.emit("new_comment", commentData);
+      io?.to(`question:${questionId}`)?.emit("comment_interaction_updated", {
         questionId,
         commentId: commentData._id,
         parentCommentId: commentData.parentCommentId,
@@ -329,7 +329,7 @@ export default function createSoulpanaRoutes(io) {
         isReply: !!parentCommentId,
         commentId: String(commentData._id),
       };
-      io.emit("question_activity", activityPayload);
+      io?.emit("question_activity", activityPayload);
 
       // ── Personal-room notifications so users NOT in the thread also get it ─
       if (authorRole === "soultee") {
@@ -430,8 +430,8 @@ export default function createSoulpanaRoutes(io) {
         userDisliked: (updated.dislikes || []).includes(userId),
       };
 
-      io.to(`question:${questionId}`).emit("comment_liked", payload);
-      io.to(`question:${questionId}`).emit("comment_interaction_updated", {
+      io?.to(`question:${questionId}`)?.emit("comment_liked", payload);
+      io?.to(`question:${questionId}`)?.emit("comment_interaction_updated", {
         questionId,
         commentId,
         type: "like",
@@ -487,8 +487,8 @@ export default function createSoulpanaRoutes(io) {
         userDisliked: (updated.dislikes || []).includes(userId),
       };
 
-      io.to(`question:${questionId}`).emit("comment_disliked", payload);
-      io.to(`question:${questionId}`).emit("comment_interaction_updated", {
+      io?.to(`question:${questionId}`)?.emit("comment_disliked", payload);
+      io?.to(`question:${questionId}`)?.emit("comment_interaction_updated", {
         questionId,
         commentId,
         type: "dislike",
@@ -554,7 +554,7 @@ export default function createSoulpanaRoutes(io) {
         respondedByName: updated.respondedByName,
         respondedAt: updated.respondedAt,
       });
-      io.emit("emotional_question_answered", { questionId: updated._id });
+      io?.emit("emotional_question_answered", { questionId: updated._id });
       res.json(updated);
     } catch (err) {
       res.status(500).json({ message: err.message });
@@ -567,7 +567,7 @@ export default function createSoulpanaRoutes(io) {
       const { status } = req.body;
       const updated = await Soulpana.findByIdAndUpdate(req.params.id, { status }, { new: true });
       if (!updated) return res.status(404).json({ message: "Not found" });
-      io.emit("emotional_question_status_changed", { questionId: updated._id, status: updated.status });
+      io?.emit("emotional_question_status_changed", { questionId: updated._id, status: updated.status });
       res.json(updated);
     } catch (err) {
       res.status(500).json({ message: err.message });
@@ -608,8 +608,8 @@ export default function createSoulpanaRoutes(io) {
       };
 
       // Broadcast to question room (open thread) and all connected clients (list views)
-      io.to(`question:${req.params.id}`).emit("engagement_updated", payload);
-      io.emit("engagement_updated", payload);
+      io?.to(`question:${req.params.id}`)?.emit("engagement_updated", payload);
+      io?.emit("engagement_updated", payload);
 
       // Fire-and-forget RTDB sync for Firebase real-time listeners
       syncEngagementToRTDB(req.params.id, payload.likeCount, payload.dislikeCount);
@@ -654,8 +654,8 @@ export default function createSoulpanaRoutes(io) {
         userDisliked: updated.dislikes.includes(userId),
       };
 
-      io.to(`question:${req.params.id}`).emit("engagement_updated", payload);
-      io.emit("engagement_updated", payload);
+      io?.to(`question:${req.params.id}`)?.emit("engagement_updated", payload);
+      io?.emit("engagement_updated", payload);
 
       syncEngagementToRTDB(req.params.id, payload.likeCount, payload.dislikeCount);
 

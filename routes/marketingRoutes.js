@@ -1,4 +1,4 @@
-import express          from "express";
+﻿import express          from "express";
 import jwt              from "jsonwebtoken";
 import admin            from "firebase-admin";
 import Campaign         from "../models/Campaign.js";
@@ -141,7 +141,7 @@ router.post("/content", async (req, res) => {
 
     const io = req.app.get("io");
     if (io) {
-      io.of("/marketing").to("marketing_room").emit("content_event", {
+      io?.of("/marketing")?.to("marketing_room")?.emit("content_event", {
         type: "content_event", operation: "insert", ts: Date.now(), item,
       });
     }
@@ -169,7 +169,7 @@ router.patch("/content/:id", async (req, res) => {
 
     const io = req.app.get("io");
     if (io) {
-      io.of("/marketing").to("marketing_room").emit("content_event", {
+      io?.of("/marketing")?.to("marketing_room")?.emit("content_event", {
         type: "content_event", operation: "update", ts: Date.now(), item,
       });
     }
@@ -267,7 +267,7 @@ router.post("/notifications/send", async (req, res) => {
 
     const io = req.app.get("io");
     if (io) {
-      io.of("/marketing").to("marketing_room").emit("notification_event", {
+      io?.of("/marketing")?.to("marketing_room")?.emit("notification_event", {
         type: "notification_event", ts: Date.now(), log,
       });
     }
@@ -318,7 +318,7 @@ router.post("/campaigns", async (req, res) => {
 
     const io = req.app.get("io");
     if (io) {
-      io.of("/marketing").to("marketing_room").emit("campaign_event", {
+      io?.of("/marketing")?.to("marketing_room")?.emit("campaign_event", {
         type: "campaign_event", operation: "insert", ts: Date.now(), campaign,
       });
     }
@@ -342,7 +342,7 @@ router.patch("/campaigns/:id", async (req, res) => {
 
     const io = req.app.get("io");
     if (io) {
-      io.of("/marketing").to("marketing_room").emit("campaign_event", {
+      io?.of("/marketing")?.to("marketing_room")?.emit("campaign_event", {
         type: "campaign_event", operation: "update", ts: Date.now(), campaign,
       });
     }

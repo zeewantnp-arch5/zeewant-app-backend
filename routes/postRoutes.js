@@ -1,4 +1,4 @@
-import express from "express";
+﻿import express from "express";
 import multer from "multer";
 import Post, { POST_CATEGORIES } from "../models/Post.js";
 import PostComment from "../models/PostComment.js";
@@ -191,7 +191,7 @@ export default function createPostRoutes(io) {
         status: "pending",
       });
 
-      io.emit("new_post_submitted", {
+      io?.emit("new_post_submitted", {
         postId:    post._id,
         title:     post.title,
         category:  post.category,
@@ -345,7 +345,7 @@ export default function createPostRoutes(io) {
 
       syncPostEngagementToRTDB(req.params.id, likeCount).catch(() => {});
 
-      io.emit("post_engagement_updated", {
+      io?.emit("post_engagement_updated", {
         postId: req.params.id, likeCount, dislikeCount,
         liked:  !alreadyLiked,
         userId,
@@ -390,7 +390,7 @@ export default function createPostRoutes(io) {
       const likeCount    = updated.likes.length;
       const dislikeCount = updated.dislikes.length;
 
-      io.emit("post_engagement_updated", {
+      io?.emit("post_engagement_updated", {
         postId: req.params.id, likeCount, dislikeCount,
         disliked: !alreadyDisliked,
         userId,
@@ -451,7 +451,7 @@ export default function createPostRoutes(io) {
         text:       text.trim(),
       });
 
-      io.emit("post_comment_added", {
+      io?.emit("post_comment_added", {
         postId:  req.params.id,
         comment: {
           _id:        comment._id,
@@ -515,7 +515,7 @@ export async function notifyPostAuthor(io, { recipientUid, recipientRole = "stud
     data,
   });
 
-  io.to(`${recipientRole}:${recipientUid}`).emit("new_notification", {
+  io?.to(`${recipientRole}:${recipientUid}`)?.emit("new_notification", {
     _id:       notification._id,
     type,
     title,

@@ -1,4 +1,4 @@
-import express from "express";
+﻿import express from "express";
 import jwt from "jsonwebtoken";
 import AuditLog from "../models/AuditLog.js";
 import AdminUser from "../models/AdminUser.js";
@@ -483,7 +483,7 @@ router.patch("/privacy-requests/:id", requireAdmin, async (req, res) => {
     // Emit update via Socket.io if available
     const io = req.app.get("io");
     if (io) {
-      io.of("/security").to("security_room").emit("privacy_update", {
+      io?.of("/security")?.to("security_room")?.emit("privacy_update", {
         type:      "privacy_update",
         requestId: request.requestId,
         status:    request.status,

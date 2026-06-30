@@ -1,4 +1,4 @@
-import crypto from "crypto";
+﻿import crypto from "crypto";
 import express from "express";
 import FollowUpOtp from "../models/FollowUpCode.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
@@ -284,7 +284,7 @@ export default function createFollowUpRoutes(io) {
           verificationMethod: "mobile",
         });
 
-        io.to(`student:${resolvedStudentUid}`).emit("otp_sent", { roomId, method: "mobile" });
+        io?.to(`student:${resolvedStudentUid}`)?.emit("otp_sent", { roomId, method: "mobile" });
 
         return res.json({
           success: true,
@@ -347,7 +347,7 @@ export default function createFollowUpRoutes(io) {
 
       console.log(`[followUp] OTP saved & email sent for room ${roomId} → (to: ${resolvedStudentEmail})`);
 
-      io.to(`student:${resolvedStudentUid}`).emit("otp_sent", { roomId, method: "email" });
+      io?.to(`student:${resolvedStudentUid}`)?.emit("otp_sent", { roomId, method: "email" });
 
       res.json({
         success: true,
@@ -385,8 +385,8 @@ export default function createFollowUpRoutes(io) {
 
       await StudentSoulteeLink.updateOne({ _id: roomId }, { chatLocked: true });
 
-      io.to(roomId).emit("followup_expired", { roomId });
-      io.to(roomId).emit("chat_relocked",    { roomId });
+      io?.to(roomId)?.emit("followup_expired", { roomId });
+      io?.to(roomId)?.emit("chat_relocked",    { roomId });
 
       console.log(`[followUp] Soultee ended follow-up early — room ${roomId}`);
       res.json({ success: true });
@@ -470,8 +470,8 @@ export default function createFollowUpRoutes(io) {
       if (linkDoc?.status === "ended") updateFields.status = "active";
       await StudentSoulteeLink.updateOne({ _id: roomId }, updateFields);
 
-      io.to(roomId).emit("otp_verified",       { roomId });
-      io.to(roomId).emit("followup_activated", {
+      io?.to(roomId)?.emit("otp_verified",       { roomId });
+      io?.to(roomId)?.emit("followup_activated", {
         roomId,
         durationMinutes: record.durationMinutes,
         expiresAt:       expiresAt.toISOString(),
@@ -487,8 +487,8 @@ export default function createFollowUpRoutes(io) {
           r.status = "EXPIRED";
           await r.save();
           await StudentSoulteeLink.updateOne({ _id: roomId }, { chatLocked: true });
-          io.to(roomId).emit("followup_expired", { roomId });
-          io.to(roomId).emit("chat_relocked",    { roomId });
+          io?.to(roomId)?.emit("followup_expired", { roomId });
+          io?.to(roomId)?.emit("chat_relocked",    { roomId });
           console.log(`[followUp] Auto-expired after ${record.durationMinutes} min — room ${roomId} relocked`);
         } catch (autoErr) {
           console.error("[followUp] Auto-expire error:", autoErr.message);

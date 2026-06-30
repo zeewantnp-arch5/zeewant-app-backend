@@ -1,4 +1,4 @@
-import FCMToken from "../models/FCMToken.js";
+﻿import FCMToken from "../models/FCMToken.js";
 import Notification from "../models/Notification.js";
 import { syncNotificationToRTDB } from "../config/firebase.js";
 import { sendPushNotification } from "./fcmService.js";
@@ -20,7 +20,7 @@ export function serializeNotification(notification) {
 }
 
 export function emitToUser(io, role, uid, eventName, payload) {
-  io.to(buildPersonalRoom(role, uid)).emit(eventName, payload);
+  io?.to(buildPersonalRoom(role, uid))?.emit(eventName, payload);
 }
 
 export async function createNotification(

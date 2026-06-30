@@ -1,4 +1,4 @@
-import express from "express";
+﻿import express from "express";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import Payment from "../models/Payment.js";
@@ -120,26 +120,26 @@ async function activateSubscription(payment, io = null) {
 
   // Notify soultee dashboard to refresh stats in real-time
   if (io) {
-    io.to(`soultee:${payment.soulteeId}`).emit("stats:updated");
+    io?.to(`soultee:${payment.soulteeId}`)?.emit("stats:updated");
 
     // Emit real-time unlock to the student so chat unlocks instantly without polling
     const studentRoom = buildPersonalRoom("student", payment.userId);
     const roomId = existingLink?._id?.toString() ?? null;
-    io.to(studentRoom).emit("chat_unlocked", {
+    io?.to(studentRoom)?.emit("chat_unlocked", {
       roomId,
       soulteeId: payment.soulteeId,
       method:    payment.method,
       expiryDate: expiryDate.toISOString(),
     });
     if (payment.method === "cos") {
-      io.to(studentRoom).emit("cos_request_approved", {
+      io?.to(studentRoom)?.emit("cos_request_approved", {
         transactionUuid: payment.transactionUuid,
         roomId,
         soulteeId:  payment.soulteeId,
         expiryDate: expiryDate.toISOString(),
       });
     } else {
-      io.to(studentRoom).emit("subscription_activated", {
+      io?.to(studentRoom)?.emit("subscription_activated", {
         roomId,
         soulteeId:  payment.soulteeId,
         method:     payment.method,
@@ -759,7 +759,7 @@ router.post("/fix-sessions", async (req, res) => {
     }
 
     const io = req.app.get("io");
-    if (io) io.to(`soultee:${soulteeId}`).emit("stats:updated");
+    if (io) io?.to(`soultee:${soulteeId}`)?.emit("stats:updated");
 
     res.json({ message: `Fixed: ${created} sessions created out of ${payments.length} payments`, created });
   } catch (err) {
@@ -827,7 +827,7 @@ router.post("/cos", async (req, res) => {
 
     const io = req.app.get("io");
     if (io) {
-      io.of("/analytics").emit("cos_update", {
+      io?.of("/analytics")?.emit("cos_update", {
         action: "new",
         transactionUuid,
         amount: fee,
@@ -871,7 +871,7 @@ router.post("/upload-proof", async (req, res) => {
 
     const io = req.app.get("io");
     if (io) {
-      io.of("/analytics").to("analytics_room").emit("analytics_snapshot", {
+      io?.of("/analytics")?.to("analytics_room")?.emit("analytics_snapshot", {
         type: "cos_proof_uploaded",
         ts: Date.now(),
         transactionUuid,
@@ -916,7 +916,7 @@ router.post("/verify-cos", requireAdminJwt, async (req, res) => {
         { new: true }
       );
       await activateSubscription(updated, io);
-      if (io) io.of("/analytics").emit("cos_update", { action: "approved", transactionUuid });
+      if (io) io?.of("/analytics")?.emit("cos_update", { action: "approved", transactionUuid });
       return res.json({ success: true, message: "COS payment approved and subscription activated." });
     }
 
@@ -938,9 +938,9 @@ router.post("/verify-cos", requireAdminJwt, async (req, res) => {
     }).catch(() => {});
 
     if (io) {
-      io.of("/analytics").emit("cos_update", { action: "rejected", transactionUuid });
+      io?.of("/analytics")?.emit("cos_update", { action: "rejected", transactionUuid });
       // Notify student in real-time so their chat screen updates immediately
-      io.to(buildPersonalRoom("student", payment.userId)).emit("cos_request_rejected", {
+      io?.to(buildPersonalRoom("student", payment.userId))?.emit("cos_request_rejected", {
         transactionUuid,
         reason: reason || "Payment verification failed",
       });
@@ -991,7 +991,7 @@ router.delete("/cos/:transactionUuid", requireAdminJwt, async (req, res) => {
     // Emit real-time event so all admin clients update instantly
     const io = req.app.get("io");
     if (io) {
-      io.of("/analytics").emit("cos_update", { action: "deleted", transactionUuid: req.params.transactionUuid });
+      io?.of("/analytics")?.emit("cos_update", { action: "deleted", transactionUuid: req.params.transactionUuid });
     }
 
     return res.json({ success: true, message: "COS record deleted." });

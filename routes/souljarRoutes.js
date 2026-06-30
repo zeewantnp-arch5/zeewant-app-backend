@@ -3,7 +3,6 @@ import mongoose from "mongoose";
 import Anthropic from "@anthropic-ai/sdk";
 import Souljar from "../models/souljar.js";
 import SoulwayReport from "../models/SoulwayReport.js";
-import { emitSouljarAnalyticsUpdate } from "../sockets/analyticsNamespace.js";
 
 // ─── Soulway system prompt (cached — does not change per request) ─────────────
 const SOULWAY_SYSTEM_PROMPT = `You are Soulway — the analytical heart of the Souljar journaling app. Soulway = Soul + Way = the user's path forward.
@@ -245,14 +244,6 @@ router.post("/", async (req, res) => {
       attachmentUrls: Array.isArray(attachmentUrls) ? attachmentUrls : [],
       wordCount: text ? text.trim().split(/\s+/).length : 0,
     });
-
-    // Fire-and-forget realtime analytics push for admin dashboard updates.
-    const io = req.app.get("io");
-    if (io) {
-      emitSouljarAnalyticsUpdate(io, newEntry).catch((err) => {
-        console.error("Souljar analytics emit error:", err.message);
-      });
-    }
 
     res.status(201).json(newEntry);
   } catch (error) {

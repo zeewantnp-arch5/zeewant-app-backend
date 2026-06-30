@@ -1,4 +1,4 @@
-import express from "express";
+﻿import express from "express";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import multer from "multer";
@@ -1607,8 +1607,8 @@ async function notifyApplicant(io, { recipientUid, type, title, body, data = {},
   };
 
   // Emit to both rooms — user may be on either dashboard depending on timing
-  io.to(`soultee:${recipientUid}`).emit("new_notification", payload);
-  io.to(`student:${recipientUid}`).emit("new_notification", payload);
+  io?.to(`soultee:${recipientUid}`)?.emit("new_notification", payload);
+  io?.to(`student:${recipientUid}`)?.emit("new_notification", payload);
 
   // Firebase RTDB sync
   syncNotificationToRTDB(recipientUid, String(notification._id), {
@@ -2049,7 +2049,7 @@ router.patch(
       // Fire-and-forget: socket, notification, audit (non-blocking)
       const io = req.app.get("io");
       if (io) {
-        io.emit("post_approved", {
+        io?.emit("post_approved", {
           postId:   String(post._id),
           title:    post.title,
           category: post.category,
@@ -2354,7 +2354,7 @@ router.patch(
 
       const io = req.app.get("io");
       if (io) {
-        io.to(`soultee:${soulteeUid}`).emit("stats:updated");
+        io?.to(`soultee:${soulteeUid}`)?.emit("stats:updated");
         await notifyApplicant(io, {
           recipientUid: soulteeUid,
           recipientRole: "soultee",
