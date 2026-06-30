@@ -6,7 +6,6 @@ import Souljar from "../models/souljar.js";
 import SoulMeterReading from "../models/SoulMeterReading.js";
 import Soulpana from "../models/Soulpana.js";
 import SoulpanaComment from "../models/SoulpanaComment.js";
-import Message from "../models/Message.js";
 import Post from "../models/Post.js";
 import PostComment from "../models/PostComment.js";
 import Session from "../models/Session.js";
@@ -51,7 +50,6 @@ router.delete("/delete-account", async (req, res) => {
       SoulMeterReading.deleteMany({ userId: uid }),
       Soulpana.deleteMany({ userId: uid }),
       SoulpanaComment.deleteMany({ authorId: uid }),
-      Message.deleteMany({ $or: [{ senderId: uid }, { recipientUid: uid }] }),
       Post.deleteMany({ userId: uid }),
       PostComment.deleteMany({ authorId: uid }),
       Session.deleteMany({ studentFirebaseUid: uid }),

@@ -1,11 +1,6 @@
-﻿import FCMToken from "../models/FCMToken.js";
 import Notification from "../models/Notification.js";
 import { syncNotificationToRTDB } from "../config/firebase.js";
 import { sendPushNotification } from "./fcmService.js";
-
-export function buildPersonalRoom(role, uid) {
-  return `${role}:${uid}`;
-}
 
 export function serializeNotification(notification) {
   return {
@@ -19,14 +14,7 @@ export function serializeNotification(notification) {
   };
 }
 
-export function emitToUser(io, role, uid, eventName, payload) {
-  io?.to(buildPersonalRoom(role, uid))?.emit(eventName, payload);
-}
-
-export async function createNotification(
-  io,
-  { recipientUid, recipientRole, type, title, body, data = {} }
-) {
+export async function createNotification({ recipientUid, recipientRole, type, title, body, data = {} }) {
   const notification = await Notification.create({
     recipientUid,
     recipientRole,
@@ -37,7 +25,6 @@ export async function createNotification(
   });
 
   const serialized = serializeNotification(notification);
-  emitToUser(io, recipientRole, recipientUid, "new_notification", serialized);
 
   // Sync to Firebase RTDB for real-time reads
   syncNotificationToRTDB(recipientUid, String(notification._id), {

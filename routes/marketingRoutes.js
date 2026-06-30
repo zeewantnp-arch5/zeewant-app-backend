@@ -139,13 +139,6 @@ router.post("/content", async (req, res) => {
       createdBy:   req.admin?.username,
     });
 
-    const io = req.app.get("io");
-    if (io) {
-      io?.of("/marketing")?.to("marketing_room")?.emit("content_event", {
-        type: "content_event", operation: "insert", ts: Date.now(), item,
-      });
-    }
-
     res.status(201).json(item);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -166,13 +159,6 @@ router.patch("/content/:id", async (req, res) => {
       { new: true }
     ).lean();
     if (!item) return res.status(404).json({ message: "Content not found" });
-
-    const io = req.app.get("io");
-    if (io) {
-      io?.of("/marketing")?.to("marketing_room")?.emit("content_event", {
-        type: "content_event", operation: "update", ts: Date.now(), item,
-      });
-    }
 
     res.json(item);
   } catch (err) {
@@ -265,13 +251,6 @@ router.post("/notifications/send", async (req, res) => {
       campaignId:     campaignId || undefined,
     });
 
-    const io = req.app.get("io");
-    if (io) {
-      io?.of("/marketing")?.to("marketing_room")?.emit("notification_event", {
-        type: "notification_event", ts: Date.now(), log,
-      });
-    }
-
     res.status(201).json({ log, sentCount });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -316,13 +295,6 @@ router.post("/campaigns", async (req, res) => {
       createdBy:      req.admin?.username,
     });
 
-    const io = req.app.get("io");
-    if (io) {
-      io?.of("/marketing")?.to("marketing_room")?.emit("campaign_event", {
-        type: "campaign_event", operation: "insert", ts: Date.now(), campaign,
-      });
-    }
-
     res.status(201).json(campaign);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -339,13 +311,6 @@ router.patch("/campaigns/:id", async (req, res) => {
       { new: true }
     ).lean();
     if (!campaign) return res.status(404).json({ message: "Campaign not found" });
-
-    const io = req.app.get("io");
-    if (io) {
-      io?.of("/marketing")?.to("marketing_room")?.emit("campaign_event", {
-        type: "campaign_event", operation: "update", ts: Date.now(), campaign,
-      });
-    }
 
     res.json(campaign);
   } catch (err) {

@@ -39,7 +39,7 @@ export async function sendPushNotification(userUid, notification) {
     };
 
     // Send to all tokens for this user
-    const response = await admin.messaging().sendMulticast({
+    const response = await admin.messaging().sendEachForMulticast({
       tokens: tokenList,
       ...message,
     });

@@ -480,18 +480,6 @@ router.patch("/privacy-requests/:id", requireAdmin, async (req, res) => {
     );
     if (!request) return res.status(404).json({ message: "Request not found" });
 
-    // Emit update via Socket.io if available
-    const io = req.app.get("io");
-    if (io) {
-      io?.of("/security")?.to("security_room")?.emit("privacy_update", {
-        type:      "privacy_update",
-        requestId: request.requestId,
-        status:    request.status,
-        id:        request._id,
-        ts:        Date.now(),
-      });
-    }
-
     res.json({ request });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -592,7 +580,6 @@ router.get("/encryption", requireAdmin, async (req, res) => {
         sessionTimeout:     cfg["session_timeout_minutes"] ?? 30,
         fcmEnabled:         cfg["fcm_push_enabled"]       ?? true,
         firebaseAuth:       cfg["firebase_auth_enabled"]  ?? true,
-        socketIoEnabled:    cfg["socket_io_enabled"]      ?? true,
       },
       dataVolume: {
         encryptedSessions:  totalMessages,

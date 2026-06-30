@@ -9,7 +9,7 @@ import SessionWithdrawal from "../models/SessionWithdrawal.js";
 import Souljar from "../models/souljar.js";
 import Soulpana from "../models/Soulpana.js";
 import { getStudentConnections } from "../services/connectionService.js";
-import { createNotification, emitToUser } from "../services/notificationService.js";
+import { createNotification } from "../services/notificationService.js";
 import { syncProfileToRTDB } from "../config/firebase.js";
 import SystemSettings from "../models/SystemSettings.js";
 
@@ -21,16 +21,16 @@ async function getPlatformCommissionRate() {
   return Number.isFinite(rate) && rate >= 0 && rate <= 100 ? rate : PLATFORM_COMMISSION_RATE;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Factory — receives io so every route handler can emit socket events
-// ─────────────────────────────────────────────────────────────────────────────
-export default function createSoulteeDashboardRoutes(io) {
+// -----------------------------------------------------------------------------
+//  Soultee dashboard route factory
+// -----------------------------------------------------------------------------
+export default function createSoulteeDashboardRoutes() {
   const router = express.Router();
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  STUDENT — get all accepted Soultee connections
   //  GET /api/soultee-dashboard/connections/:studentUid
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.get("/connections/:studentUid", async (req, res) => {
     try {
       const connections = await getStudentConnections(req.params.studentUid);
@@ -40,10 +40,10 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  STUDENT — get all my requests (status per soultee)
   //  GET /api/soultee-dashboard/my-requests/:studentUid
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.get("/my-requests/:studentUid", async (req, res) => {
     try {
       const links = await StudentSoulteeLink.find({
@@ -57,10 +57,10 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  SOULTEE REGISTRATION / PROFILE SYNC
   //  POST /api/soultee-dashboard/register
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.post("/register", async (req, res) => {
     try {
       const { firebaseUid, name, gender, specialization, experienceYears, languages, bio } = req.body;
@@ -205,10 +205,10 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  SOULTEE ONLINE/OFFLINE STATUS
   //  PATCH /api/soultee-dashboard/:soulteeUid/status
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.patch("/:soulteeUid/status", async (req, res) => {
     try {
       const { status } = req.body;
@@ -255,10 +255,10 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  SOULTEE DASHBOARD STATS
   //  GET /api/soultee-dashboard/:soulteeUid/stats
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.get("/:soulteeUid/stats", async (req, res) => {
     try {
       const { soulteeUid } = req.params;
@@ -289,10 +289,10 @@ export default function createSoulteeDashboardRoutes(io) {
 
       const defaultFee = Number(soultee?.feePerSession || 0);
 
-      // ── Dynamic commission from DB ────────────────────────────────────────
+      // -- Dynamic commission from DB ----------------------------------------
       const commissionRate = await getPlatformCommissionRate();
 
-      // ── Full earnings aggregate ───────────────────────────────────────────
+      // -- Full earnings aggregate -------------------------------------------
       const [agg] = await Session.aggregate([
         { $match: { soulteeFirebaseUid: soulteeUid } },
         {
@@ -345,14 +345,14 @@ export default function createSoulteeDashboardRoutes(io) {
         },
       ]);
 
-      // ── Unique clients / repeat ───────────────────────────────────────────
+      // -- Unique clients / repeat -------------------------------------------
       const clientSet    = (agg?.totalClientsServed ?? []).filter(Boolean);
       const uniqueClients = clientSet.length;
       const completedCount = agg?.completedSessions ?? 0;
       const repeatClients = Math.max(0, completedCount - uniqueClients);
       const avgSessionMins = completedCount > 0 ? Math.round((agg?.totalDurationMins ?? 0) / completedCount) : 0;
 
-      // ── Wallet — auto-updated when session completes ─────────────────────
+      // -- Wallet — auto-updated when session completes ---------------------
       const earnedSoFar     = wallet?.totalEarned ?? 0;   // incremented on session completion
       const totalWithdrawn  = wallet?.totalWithdrawn ?? 0;
       const pendingWd       = wallet?.pendingWithdrawals ?? 0;
@@ -401,11 +401,11 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
-  //  STUDENT → SOULTEE REQUEST
+  // ---------------------------------------------------------------------------
+  //  STUDENT ? SOULTEE REQUEST
   //  POST /api/soultee-dashboard/request
   //  Body: { studentFirebaseUid, studentName, studentEmail?, soulteeFirebaseUid, requestMessage }
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.post("/request", async (req, res) => {
     try {
       const { studentFirebaseUid, studentName, studentEmail, soulteeFirebaseUid, requestMessage } = req.body;
@@ -429,7 +429,7 @@ export default function createSoulteeDashboardRoutes(io) {
         if (existing.status === "pending") {
           return res.status(409).json({ message: "Request already sent, waiting for acceptance" });
         }
-        // ended or declined → allow re-request
+        // ended or declined ? allow re-request
         existing.status         = "pending";
         existing.requestMessage = requestMessage || "";
         if (normalizedStudentEmail) existing.studentEmail = normalizedStudentEmail;
@@ -448,18 +448,8 @@ export default function createSoulteeDashboardRoutes(io) {
           requestMessage: requestMessage || "",
         });
       }
-
-      // Real-time: tell the soultee a new request arrived (for request list update)
-      io?.to(`soultee:${soulteeFirebaseUid}`)?.emit("new_connection_request", {
-        linkId:            link._id,
-        studentFirebaseUid,
-        studentName:       studentName || "Student",
-        requestMessage:    requestMessage || "",
-        requestedAt:       link.requestedAt,
-      });
-
-      // Persist notification + emit new_notification + FCM push
-      await createNotification(io, {
+      // Persist notification + FCM push
+      await createNotification({
         recipientUid:  soulteeFirebaseUid,
         recipientRole: "soultee",
         type:          "connection_request",
@@ -481,10 +471,10 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  GET PENDING REQUESTS FOR A SOULTEE
   //  GET /api/soultee-dashboard/:soulteeUid/requests
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.get("/:soulteeUid/requests", async (req, res) => {
     try {
       const requests = await StudentSoulteeLink.find({
@@ -500,10 +490,10 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  ACCEPT STUDENT REQUEST
   //  PATCH /api/soultee-dashboard/:soulteeUid/requests/:studentUid/accept
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.patch("/:soulteeUid/requests/:studentUid/accept", async (req, res) => {
     try {
       const { soulteeUid, studentUid } = req.params;
@@ -521,33 +511,8 @@ export default function createSoulteeDashboardRoutes(io) {
 
       const roomId = link._id.toString();
 
-      // Real-time: tell the student their request was accepted (triggers UI update)
-      const acceptedPayload = {
-        linkId:             link._id,
-        soulteeFirebaseUid: soulteeUid,
-        roomId,
-        soulteeName:        soultee?.name         || "Your Soultee",
-        solteeName:         soultee?.name         || "Your Soultee",
-        soulteeProfileImage: soultee?.profileImage || null,
-        acceptedAt:         link.acceptedAt,
-      };
-
-      emitToUser(io, "student", studentUid, "connection_accepted", acceptedPayload);
-      emitToUser(io, "student", studentUid, "connection_request_updated", {
-        linkId: link._id,
-        status: "active",
-        roomId,
-        soulteeFirebaseUid: soulteeUid,
-      });
-      emitToUser(io, "soultee", soulteeUid, "connection_request_updated", {
-        linkId: link._id,
-        status: "active",
-        studentFirebaseUid: studentUid,
-        roomId,
-      });
-
-      // Persist notification + emit new_notification + FCM push
-      await createNotification(io, {
+      // Persist notification + FCM push
+      await createNotification({
         recipientUid:  studentUid,
         recipientRole: "student",
         type:          "connection_accepted",
@@ -569,10 +534,10 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  DECLINE STUDENT REQUEST
   //  PATCH /api/soultee-dashboard/:soulteeUid/requests/:studentUid/decline
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.patch("/:soulteeUid/requests/:studentUid/decline", async (req, res) => {
     try {
       const { soulteeUid, studentUid } = req.params;
@@ -588,28 +553,8 @@ export default function createSoulteeDashboardRoutes(io) {
         .select("name")
         .lean();
 
-      // Real-time: tell the student their request was declined
-      const declinedPayload = {
-        linkId:             link._id,
-        soulteeFirebaseUid: soulteeUid,
-        soulteeName:        soultee?.name || "Your Soultee",
-        solteeName:         soultee?.name || "Your Soultee",
-      };
-
-      emitToUser(io, "student", studentUid, "connection_declined", declinedPayload);
-      emitToUser(io, "student", studentUid, "connection_request_updated", {
-        linkId: link._id,
-        status: "declined",
-        soulteeFirebaseUid: soulteeUid,
-      });
-      emitToUser(io, "soultee", soulteeUid, "connection_request_updated", {
-        linkId: link._id,
-        status: "declined",
-        studentFirebaseUid: studentUid,
-      });
-
-      // Persist notification + emit new_notification + FCM push
-      await createNotification(io, {
+      // Persist notification + FCM push
+      await createNotification({
         recipientUid:  studentUid,
         recipientRole: "student",
         type:          "connection_declined",
@@ -630,10 +575,10 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  GET ALL ACTIVE STUDENTS FOR A SOULTEE (with latest activity)
   //  GET /api/soultee-dashboard/:soulteeUid/students
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.get("/:soulteeUid/students", async (req, res) => {
     try {
       const links = await StudentSoulteeLink.find({
@@ -686,10 +631,10 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  GET A SPECIFIC STUDENT'S FULL DASHBOARD DATA
   //  GET /api/soultee-dashboard/:soulteeUid/students/:studentUid
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.get("/:soulteeUid/students/:studentUid", async (req, res) => {
     try {
       const { soulteeUid, studentUid } = req.params;
@@ -745,10 +690,10 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  END / UNLINK A STUDENT
   //  PATCH /api/soultee-dashboard/:soulteeUid/students/:studentUid/end
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.patch("/:soulteeUid/students/:studentUid/end", async (req, res) => {
     try {
       const now = new Date();
@@ -794,15 +739,9 @@ export default function createSoulteeDashboardRoutes(io) {
       }
 
       // Refresh soultee dashboard stats
-      io?.to(`soultee:${req.params.soulteeUid}`)?.emit("stats:updated");
 
       // Notify both participants that chat is now locked
-      io?.to(link._id.toString())?.emit("chat_locked", { roomId: link._id.toString() });
       // Notify student's personal room so soultee_search_screen can hide Paid badge
-      io?.to(`student:${req.params.studentUid}`)?.emit("session_ended", {
-        soulteeFirebaseUid: req.params.soulteeUid,
-        roomId: link._id.toString(),
-      });
 
       res.json({ message: "Student unlinked", link });
     } catch (err) {
@@ -810,9 +749,9 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  SESSIONS — CRUD
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
 
   // Create a session
   // POST /api/soultee-dashboard/:soulteeUid/sessions
@@ -838,7 +777,7 @@ export default function createSoulteeDashboardRoutes(io) {
       });
 
       // Notify student about the scheduled session
-      await createNotification(io, {
+      await createNotification({
         recipientUid:  studentFirebaseUid,
         recipientRole: "student",
         type:          "session_scheduled",
@@ -927,7 +866,7 @@ export default function createSoulteeDashboardRoutes(io) {
           .select("name")
           .lean();
 
-        await createNotification(io, {
+        await createNotification({
           recipientUid:  session.studentFirebaseUid,
           recipientRole: "student",
           type:          "session_cancelled",
@@ -947,10 +886,10 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  SSE — Live dashboard stats stream (fallback for polling clients)
   //  GET /api/soultee-dashboard/:soulteeUid/live
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.get("/:soulteeUid/live", async (req, res) => {
     const { soulteeUid } = req.params;
 
@@ -985,11 +924,11 @@ export default function createSoulteeDashboardRoutes(io) {
     req.on("close", () => clearInterval(interval));
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  STUDENT — submit feedback after a session
   //  POST /api/soultee-dashboard/:soulteeUid/feedback
   //  Body: { studentUid, studentName, rating (1-5), comment?, roomId? }
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.post("/:soulteeUid/feedback", async (req, res) => {
     try {
       const { soulteeUid } = req.params;
@@ -1038,10 +977,10 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  SOULTEE — get all feedback received
   //  GET /api/soultee-dashboard/:soulteeUid/feedbacks?limit=20&page=1
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.get("/:soulteeUid/feedbacks", async (req, res) => {
     try {
       const limit = Math.min(50, parseInt(req.query.limit) || 20);
@@ -1063,11 +1002,11 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  SOULTEE — save / update bank account details
   //  PATCH /api/soultee-dashboard/:soulteeUid/bank-account
   //  Body: { bankName, accountNumber, accountHolder, branchName }
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.patch("/:soulteeUid/bank-account", async (req, res) => {
     try {
       const { bankName, accountNumber, accountHolder, branchName, bankQrUrl } = req.body;
@@ -1098,11 +1037,11 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  SOULTEE — update digital wallet (eSewa / Khalti number + QR URL)
   //  PATCH /api/soultee-dashboard/:soulteeUid/digital-wallet
   //  Body: { esewaNumber?, esewaQrUrl?, khaltiNumber?, khaltiQrUrl? }
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.patch("/:soulteeUid/digital-wallet", async (req, res) => {
     try {
       const { esewaNumber, esewaQrUrl, khaltiNumber, khaltiQrUrl } = req.body;
@@ -1129,10 +1068,10 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  SOULTEE / STUDENT — get soultee payment info (bank + QR URLs)
   //  GET /api/soultee-dashboard/:soulteeUid/payment-info
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.get("/:soulteeUid/payment-info", async (req, res) => {
     try {
       const soultee = await Soultee.findOne({ firebaseUid: req.params.soulteeUid })
@@ -1145,11 +1084,11 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  SOULTEE — set / update own consultation fee
   //  PATCH /api/soultee-dashboard/:soulteeUid/fee
   //  Body: { feePerSession: Number, currency?: String }
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.patch("/:soulteeUid/fee", async (req, res) => {
     try {
       const { soulteeUid } = req.params;
@@ -1180,10 +1119,10 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  STUDENT — get a single soultee's fee before booking
   //  GET /api/soultee-dashboard/:soulteeUid/fee
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.get("/:soulteeUid/fee", async (req, res) => {
     try {
       const soultee = await Soultee.findOne({ firebaseUid: req.params.soulteeUid })
@@ -1201,11 +1140,11 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  NOTIFY STUDENTS — I'M AVAILABLE NOW
   //  POST /api/soultee-dashboard/:soulteeUid/notify-available
   //  Sends a real FCM push to every student linked to this soultee.
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.post("/:soulteeUid/notify-available", async (req, res) => {
     try {
       const { soulteeUid } = req.params;
@@ -1226,7 +1165,7 @@ export default function createSoulteeDashboardRoutes(io) {
         return res.json({ message: "No connected students to notify.", notified: 0 });
       }
 
-      const title = `${soulteeName} is Available Now 🟢`;
+      const title = `${soulteeName} is Available Now ??`;
       const body  = "Your Soultee is online and ready for counselling. Tap to connect!";
 
       let notified = 0;
@@ -1234,8 +1173,8 @@ export default function createSoulteeDashboardRoutes(io) {
         links.map(async (link) => {
           try {
             // createNotification: saves to MongoDB + syncs RTDB + sends FCM push
-            // → notification appears in student's bell AND as phone push
-            await createNotification(io, {
+            // ? notification appears in student's bell AND as phone push
+            await createNotification({
               recipientUid:  link.studentFirebaseUid,
               recipientRole: "student",
               type:          "soultee_available",
@@ -1260,11 +1199,11 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  ACTIVE SESSION
   //  GET /api/soultee-dashboard/:soulteeUid/active-session
   //  Returns the current ongoing session (or null).
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.get("/:soulteeUid/active-session", async (req, res) => {
     try {
       const session = await Session.findOne({
@@ -1306,11 +1245,11 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  START SESSION TIMER
   //  PATCH /api/soultee-dashboard/:soulteeUid/sessions/:sessionId/start
   //  Transitions session to "ongoing" and records startedAt.
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.patch("/:soulteeUid/sessions/:sessionId/start", async (req, res) => {
     try {
       const session = await Session.findOneAndUpdate(
@@ -1319,13 +1258,6 @@ export default function createSoulteeDashboardRoutes(io) {
         { new: true }
       );
       if (!session) return res.status(404).json({ message: "Session not found or already started" });
-
-      io?.to(`session:${req.params.sessionId}`)?.emit("session:started", {
-        sessionId: req.params.sessionId,
-        startedAt: session.startedAt,
-        durationMinutes: session.durationMinutes,
-      });
-      io?.to(`soultee:${req.params.soulteeUid}`)?.emit("stats:updated");
 
       // Auto-complete after session duration expires
       const durationMs = (session.durationMinutes || 10) * 60 * 1000;
@@ -1342,21 +1274,12 @@ export default function createSoulteeDashboardRoutes(io) {
           s.platformEarnings = platformEarnings;
           // adminPaid remains false — wallet only moves when admin explicitly pays soultee
           await s.save();
-          io?.to(`session:${req.params.sessionId}`)?.emit("session:completed", { sessionId: req.params.sessionId });
-          io?.to(`soultee:${req.params.soulteeUid}`)?.emit("stats:updated");
           // Lock chat when timer expires
-          const chatLink = await StudentSoulteeLink.findOneAndUpdate(
+          await StudentSoulteeLink.findOneAndUpdate(
             { soulteeFirebaseUid: s.soulteeFirebaseUid, studentFirebaseUid: s.studentFirebaseUid, status: "active" },
             { chatLocked: true },
             { new: true }
           );
-          if (chatLink) {
-            io?.to(chatLink._id.toString())?.emit("chat_locked", { roomId: chatLink._id.toString() });
-            io?.to(`student:${chatLink.studentFirebaseUid}`)?.emit("session_ended", {
-              soulteeFirebaseUid: chatLink.soulteeFirebaseUid,
-              roomId: chatLink._id.toString(),
-            });
-          }
         } catch (autoErr) {
           console.error("Auto-complete session error:", autoErr.message);
         }
@@ -1368,10 +1291,10 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  COMPLETE SESSION & UPDATE WALLET
   //  PATCH /api/soultee-dashboard/:soulteeUid/sessions/:sessionId/complete
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.patch("/:soulteeUid/sessions/:sessionId/complete", async (req, res) => {
     try {
       const session = await Session.findOne({
@@ -1392,26 +1315,12 @@ export default function createSoulteeDashboardRoutes(io) {
       // adminPaid remains false — wallet only moves when admin explicitly pays soultee
       await session.save();
 
-      io?.to(`session:${req.params.sessionId}`)?.emit("session:completed", {
-        sessionId: req.params.sessionId,
-      });
-
-      // Push real-time dashboard refresh to the soultee
-      io?.to(`soultee:${req.params.soulteeUid}`)?.emit("stats:updated");
-
       // Lock chat for this student-soultee pair
-      const chatLink = await StudentSoulteeLink.findOneAndUpdate(
+      await StudentSoulteeLink.findOneAndUpdate(
         { soulteeFirebaseUid: req.params.soulteeUid, studentFirebaseUid: session.studentFirebaseUid, status: "active" },
         { chatLocked: true },
         { new: true }
       );
-      if (chatLink) {
-        io?.to(chatLink._id.toString())?.emit("chat_locked", { roomId: chatLink._id.toString() });
-        io?.to(`student:${chatLink.studentFirebaseUid}`)?.emit("session_ended", {
-          soulteeFirebaseUid: chatLink.soulteeFirebaseUid,
-          roomId: chatLink._id.toString(),
-        });
-      }
 
       res.json({ session, soulteeEarnings, platformEarnings });
     } catch (err) {
@@ -1419,10 +1328,10 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  WALLET INFO
   //  GET /api/soultee-dashboard/:soulteeUid/wallet
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.get("/:soulteeUid/wallet", async (req, res) => {
     try {
       const wallet = await SessionWallet.findOne({ soulteeFirebaseUid: req.params.soulteeUid }).lean();
@@ -1443,11 +1352,11 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  REQUEST WITHDRAWAL
   //  POST /api/soultee-dashboard/:soulteeUid/withdrawals
   //  Body: { amount, method, accountDetails }
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.post("/:soulteeUid/withdrawals", async (req, res) => {
     try {
       const { soulteeUid } = req.params;
@@ -1491,10 +1400,10 @@ export default function createSoulteeDashboardRoutes(io) {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   //  WITHDRAWAL HISTORY
   //  GET /api/soultee-dashboard/:soulteeUid/withdrawals?status=&page=
-  // ───────────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
   router.get("/:soulteeUid/withdrawals", async (req, res) => {
     try {
       const { status, page = "1", limit = "20" } = req.query;

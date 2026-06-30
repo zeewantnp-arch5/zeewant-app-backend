@@ -66,7 +66,7 @@ function maskPhone(phone) {
   return phone.slice(0, -4) + "****";
 }
 
-export default function createFollowUpRoutes(io) {
+export default function createFollowUpRoutes() {
   const router = express.Router();
 
   // ─── GET /api/follow-up/:roomId/access-check ───────────────────────────────
@@ -284,8 +284,6 @@ export default function createFollowUpRoutes(io) {
           verificationMethod: "mobile",
         });
 
-        io?.to(`student:${resolvedStudentUid}`)?.emit("otp_sent", { roomId, method: "mobile" });
-
         return res.json({
           success: true,
           message: "Please verify your mobile number",
@@ -347,8 +345,6 @@ export default function createFollowUpRoutes(io) {
 
       console.log(`[followUp] OTP saved & email sent for room ${roomId} → (to: ${resolvedStudentEmail})`);
 
-      io?.to(`student:${resolvedStudentUid}`)?.emit("otp_sent", { roomId, method: "email" });
-
       res.json({
         success: true,
         message: "Verification code sent to your email",
@@ -384,9 +380,6 @@ export default function createFollowUpRoutes(io) {
       await record.save();
 
       await StudentSoulteeLink.updateOne({ _id: roomId }, { chatLocked: true });
-
-      io?.to(roomId)?.emit("followup_expired", { roomId });
-      io?.to(roomId)?.emit("chat_relocked",    { roomId });
 
       console.log(`[followUp] Soultee ended follow-up early — room ${roomId}`);
       res.json({ success: true });
@@ -464,19 +457,11 @@ export default function createFollowUpRoutes(io) {
       record.expiresAt   = expiresAt;
       await record.save();
 
-      // Unlock chat — reactivate "ended" links so messageService can find them
+      // Unlock chat by reactivating ended links for the active follow-up window
       const linkDoc = await StudentSoulteeLink.findOne({ _id: roomId }).lean();
       const updateFields = { chatLocked: false };
       if (linkDoc?.status === "ended") updateFields.status = "active";
       await StudentSoulteeLink.updateOne({ _id: roomId }, updateFields);
-
-      io?.to(roomId)?.emit("otp_verified",       { roomId });
-      io?.to(roomId)?.emit("followup_activated", {
-        roomId,
-        durationMinutes: record.durationMinutes,
-        expiresAt:       expiresAt.toISOString(),
-        activatedAt:     activatedAt.toISOString(),
-      });
       console.log(`[followUp] Follow-up started — room ${roomId}, duration ${record.durationMinutes} min`);
 
       // Server-side auto-expire
@@ -487,8 +472,6 @@ export default function createFollowUpRoutes(io) {
           r.status = "EXPIRED";
           await r.save();
           await StudentSoulteeLink.updateOne({ _id: roomId }, { chatLocked: true });
-          io?.to(roomId)?.emit("followup_expired", { roomId });
-          io?.to(roomId)?.emit("chat_relocked",    { roomId });
           console.log(`[followUp] Auto-expired after ${record.durationMinutes} min — room ${roomId} relocked`);
         } catch (autoErr) {
           console.error("[followUp] Auto-expire error:", autoErr.message);

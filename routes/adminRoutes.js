@@ -740,17 +740,13 @@ router.patch(
         },
         { upsert: true, new: true }
       );
-
-      const io = req.app.get("io");
-      if (io) {
-        notifyApplicant(io, {
+      notifyApplicant({
           recipientUid: uid,
           type: "application_approved",
           title: "Congratulations! You're now a SOULTEE 🎉",
           body: "Your SOULTEE profile has been approved. You can now go online and start helping students.",
           data: { type: "application_approved" },
         }).catch((err) => console.error("[Soultee Approve] Notify error:", err.message));
-      }
 
       res.json({ message: "SOULTEE approved successfully" });
     } catch (error) {
@@ -818,17 +814,13 @@ router.patch(
     try {
       const db = getFirestore();
       await db.collection("users").doc(uid).update({ role: "Student", rolePending: false });
-
-      const io = req.app.get("io");
-      if (io) {
-        notifyApplicant(io, {
+      notifyApplicant({
           recipientUid: uid,
           type: "application_rejected",
           title: "SOULTEE Profile Update",
           body: "Your SOULTEE profile application was not approved at this time.",
           data: { type: "application_rejected" },
         }).catch((err) => console.error("[Soultee Reject] Notify error:", err.message));
-      }
 
       res.json({ message: "SOULTEE rejected" });
     } catch (error) {
@@ -1582,7 +1574,7 @@ router.get("/media/signed-url", requireAdmin, async (req, res) => {
 // ════════════════════════════════════════════════════════════════════════════
 
 // ─── Helper: send multi-channel notification to an applicant ─────────────────
-async function notifyApplicant(io, { recipientUid, type, title, body, data = {}, recipientRole }) {
+async function notifyApplicant({ recipientUid, type, title, body, data = {}, recipientRole }) {
   // application_approved → user is now a soultee; all others default to student
   const resolvedRecipientRole =
     recipientRole || (type === "application_approved" ? "soultee" : "student");
@@ -1595,20 +1587,6 @@ async function notifyApplicant(io, { recipientUid, type, title, body, data = {},
     body,
     data,
   });
-
-  const payload = {
-    _id:       notification._id,
-    type:      notification.type,
-    title:     notification.title,
-    body:      notification.body,
-    data:      Object.fromEntries(notification.data || []),
-    read:      false,
-    createdAt: notification.createdAt,
-  };
-
-  // Emit to both rooms — user may be on either dashboard depending on timing
-  io?.to(`soultee:${recipientUid}`)?.emit("new_notification", payload);
-  io?.to(`student:${recipientUid}`)?.emit("new_notification", payload);
 
   // Firebase RTDB sync
   syncNotificationToRTDB(recipientUid, String(notification._id), {
@@ -1806,8 +1784,7 @@ router.patch(
       }
 
       // Real-time notification to the applicant
-      if (req.app.get("io")) {
-        await notifyApplicant(req.app.get("io"), {
+      await notifyApplicant({
           recipientUid: application.firebaseUid,
           type:         "application_approved",
           title:        "Congratulations! Application Approved 🎉",
@@ -1818,7 +1795,6 @@ router.patch(
             category:   approvedCategory,
           },
         });
-      }
 
       res.json({ message: "Application approved", badge, status: "approved" });
     } catch (err) {
@@ -1864,9 +1840,7 @@ router.patch(
           rolePending: false,
         });
       } catch (_) { /* non-fatal */ }
-
-      if (req.app.get("io")) {
-        await notifyApplicant(req.app.get("io"), {
+      await notifyApplicant({
           recipientUid: application.firebaseUid,
           type:         "application_rejected",
           title:        "SOULTEE Application Update",
@@ -1875,7 +1849,6 @@ router.patch(
             : "Your SOULTEE application was not approved at this time.",
           data: { type: "application_rejected", comment },
         });
-      }
 
       res.json({ message: "Application rejected", status: "rejected" });
     } catch (err) {
@@ -1916,16 +1889,13 @@ router.patch(
         { new: true }
       );
       if (!application) return res.status(404).json({ message: "Application not found" });
-
-      if (req.app.get("io")) {
-        await notifyApplicant(req.app.get("io"), {
+      await notifyApplicant({
           recipientUid: application.firebaseUid,
           type:         "application_revision_requested",
           title:        "Action Required: Update Your Application",
           body:         comment,
           data: { type: "application_revision_requested", comment },
         });
-      }
 
       res.json({ message: "Revision requested", status: "revision_requested" });
     } catch (err) {
@@ -2045,18 +2015,8 @@ router.patch(
 
       // Respond immediately — don't block on FCM / audit log
       res.json({ message: "Post approved and published to explore feed", status: "approved" });
-
-      // Fire-and-forget: socket, notification, audit (non-blocking)
-      const io = req.app.get("io");
-      if (io) {
-        io?.emit("post_approved", {
-          postId:   String(post._id),
-          title:    post.title,
-          category: post.category,
-          userId:   post.userId,
-          userName: post.userName,
-        });
-        notifyPostAuthor(io, {
+      // Fire-and-forget: notification and audit (non-blocking)
+      notifyPostAuthor({
           recipientUid:  post.userId,
           recipientRole: post.userRole || "student",
           type:          "post_approved",
@@ -2064,7 +2024,6 @@ router.patch(
           body:          `Your post "${post.title}" has been approved and is now visible to students.`,
           data:          { type: "post_approved", postId: String(post._id) },
         }).catch(() => {});
-      }
       writeAuditLog(req, {
         action:       "post_approved",
         resourceType: "post",
@@ -2122,11 +2081,8 @@ router.patch(
 
       // Respond immediately — don't block on FCM / audit log
       res.json({ message: "Post rejected", status: "rejected" });
-
       // Fire-and-forget: notification + audit (non-blocking)
-      const io = req.app.get("io");
-      if (io) {
-        notifyPostAuthor(io, {
+      notifyPostAuthor({
           recipientUid:  post.userId,
           recipientRole: post.userRole || "student",
           type:          "post_rejected",
@@ -2136,7 +2092,6 @@ router.patch(
             : `Your post "${post.title}" was not approved at this time.`,
           data: { type: "post_rejected", postId: String(post._id), comment },
         }).catch(() => {});
-      }
       writeAuditLog(req, {
         action:       "post_rejected",
         resourceType: "post",
@@ -2351,11 +2306,7 @@ router.patch(
           { upsert: true }
         );
       }
-
-      const io = req.app.get("io");
-      if (io) {
-        io?.to(`soultee:${soulteeUid}`)?.emit("stats:updated");
-        await notifyApplicant(io, {
+      await notifyApplicant({
           recipientUid: soulteeUid,
           recipientRole: "soultee",
           type: "billing_payment_success",
@@ -2370,7 +2321,6 @@ router.patch(
             screen: "notifications",
           },
         });
-      }
 
       await writeAuditLog(req, {
         action: "soultee_payment_marked_success",

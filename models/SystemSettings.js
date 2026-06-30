@@ -46,7 +46,6 @@ systemSettingsSchema.statics.ensureDefaults = async function () {
     { key: "require_cert_for_coach",     value: true,   category: "onboarding",    label: "Require Cert for Coaches",     description: "Coaches must upload at least one certification" },
     // Integrations
     { key: "firebase_auth_enabled",      value: true,   category: "integrations",  label: "Firebase Auth",                description: "Firebase phone authentication" },
-    { key: "socket_io_enabled",          value: true,   category: "integrations",  label: "Socket.io Real-time",          description: "Real-time Socket.io connection" },
     // Revenue
     { key: "platform_commission_rate",   value: 10,     category: "general",       label: "Platform Commission %",        description: "Commission % deducted from each session fee. Remaining goes to soultee." },
   ];

@@ -7,16 +7,16 @@ import { dirname } from "path";
 import Soulpana from "../models/Soulpana.js";
 import SoulpanaComment from "../models/SoulpanaComment.js";
 import Soultee from "../models/Soultee.js";
-import { emitToUser, createNotification } from "../services/notificationService.js";
+import { createNotification } from "../services/notificationService.js";
 import { syncCommentInteractionToRTDB, syncCommentToRTDB, syncEngagementToRTDB } from "../config/firebase.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// ── Ensure upload directory exists ────────────────────────────────────────────
+// -- Ensure upload directory exists --------------------------------------------
 const UPLOAD_DIR = path.join(__dirname, "../uploads/soulpana");
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-// ── File storage (only used when files are actually attached) ────────────────
+// -- File storage (only used when files are actually attached) ----------------
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
     cb(null, UPLOAD_DIR);
@@ -38,7 +38,7 @@ const upload = multer({
   },
 });
 
-// ── Conditionally apply multer only when request is multipart ────────────────
+// -- Conditionally apply multer only when request is multipart ----------------
 // Wraps Multer so errors (bad file type, size exceeded, disk failure) are
 // returned as clean JSON 400 responses instead of falling through to
 // Express's default HTML 500 error page.
@@ -62,11 +62,11 @@ function maybeMultipart(req, res, next) {
   });
 }
 
-// ── Factory — receives io so routes can emit real-time events ─────────────
-export default function createSoulpanaRoutes(io) {
+// -- Factory — receives io so routes can emit real-time events -------------
+export default function createSoulpanaRoutes() {
   const router = express.Router();
 
-  // ── POST /api/soulpana  ──  student submits emotional question ───────────────
+  // -- POST /api/soulpana  --  student submits emotional question ---------------
   // Accepts both application/json and multipart/form-data
   router.post("/", maybeMultipart, async (req, res) => {
     try {
@@ -120,32 +120,15 @@ export default function createSoulpanaRoutes(io) {
         attachments,
         mediaUrls: parsedMediaUrls,
       });
-
-      // Respond immediately — socket work is fire-and-forget
       res.status(201).json(entry);
-
-      const payload = {
-        questionId:         entry._id,
-        _id:                entry._id,
-        title:              entry.title,
-        category:           entry.category,
-        emotionTag:         entry.emotionTag,
-        anonymous:          entry.anonymous,
-        description:        entry.description,
-        assignedSoulteeUid: entry.assignedSoulteeUid,
-        mediaUrls:          entry.mediaUrls,
-        createdAt:          entry.createdAt,
-        status:             'pending',
-      };
 
       const senderLabel = (anonymous === "true" || anonymous === true)
         ? "Someone"
         : (userName || "A student");
 
       if (entry.assignedSoulteeUid) {
-        // Notify the specific assigned soultee — socket + FCM push
-        emitToUser(io, "soultee", entry.assignedSoulteeUid, "new_emotional_question", payload);
-        createNotification(io, {
+        // Notify the specific assigned soultee — persisted notification + FCM push
+        createNotification({
           recipientUid:  entry.assignedSoulteeUid,
           recipientRole: "soultee",
           type:          "new_emotional_question",
@@ -158,13 +141,11 @@ export default function createSoulpanaRoutes(io) {
           },
         }).catch((e) => console.error("[Soulpana notify soultee] error:", e.message));
       } else {
-        // No specific soultee → broadcast socket to all; FCM to every soultee
-        io?.emit("emotional_question_submitted", payload);
+        // No specific soultee ? notify every soultee through persisted notification + FCM
         Soultee.find({}).select("firebaseUid").lean()
           .then((soultees) => {
             soultees.forEach(({ firebaseUid }) => {
-              emitToUser(io, "soultee", firebaseUid, "new_emotional_question", payload);
-              createNotification(io, {
+              createNotification({
                 recipientUid:  firebaseUid,
                 recipientRole: "soultee",
                 type:          "new_emotional_question",
@@ -187,7 +168,7 @@ export default function createSoulpanaRoutes(io) {
     }
   });
 
-  // ── GET /api/soulpana/pending/all  ──  soultee queue ────────────────────────
+  // -- GET /api/soulpana/pending/all  --  soultee queue ------------------------
   router.get("/pending/all", async (req, res) => {
     try {
       const { soulteeUid, emotionTag, page = 1, limit = 15 } = req.query;
@@ -238,7 +219,7 @@ export default function createSoulpanaRoutes(io) {
     }
   });
 
-  // ── GET /api/soulpana/stats  ──  pending / answered / closed counts ──────────
+  // -- GET /api/soulpana/stats  --  pending / answered / closed counts ----------
   router.get("/stats", async (_req, res) => {
     try {
       const [pending, answered, closed] = await Promise.all([
@@ -252,7 +233,7 @@ export default function createSoulpanaRoutes(io) {
     }
   });
 
-  // ── GET /api/soulpana/:questionId/comments  ──  load thread ─────────────────
+  // -- GET /api/soulpana/:questionId/comments  --  load thread -----------------
   router.get("/:questionId/comments", async (req, res) => {
     try {
       const comments = await SoulpanaComment.find({
@@ -264,7 +245,7 @@ export default function createSoulpanaRoutes(io) {
     }
   });
 
-  // ── POST /api/soulpana/:questionId/comments  ──  post a comment ─────────────
+  // -- POST /api/soulpana/:questionId/comments  --  post a comment -------------
   router.post("/:questionId/comments", async (req, res) => {
     try {
       const { authorId, authorName, authorRole, text, parentCommentId } = req.body;
@@ -287,7 +268,7 @@ export default function createSoulpanaRoutes(io) {
         text: text.trim(),
       });
 
-      // If question is still pending and a soultee comments → mark answered
+      // If question is still pending and a soultee comments ? mark answered
       if (question.status === "pending" && authorRole === "soultee") {
         await Soulpana.findByIdAndUpdate(questionId, {
           status: "answered",
@@ -295,19 +276,9 @@ export default function createSoulpanaRoutes(io) {
           respondedByName: authorName,
           respondedAt: new Date(),
         });
-        io?.emit("emotional_question_answered", { questionId });
       }
 
       const commentData = comment.toObject();
-
-      // Emit to the question's socket room so both parties get it live
-      io?.to(`question:${questionId}`)?.emit("new_comment", commentData);
-      io?.to(`question:${questionId}`)?.emit("comment_interaction_updated", {
-        questionId,
-        commentId: commentData._id,
-        parentCommentId: commentData.parentCommentId,
-        type: parentCommentId ? "reply" : "comment",
-      });
 
       syncCommentInteractionToRTDB(questionId, String(commentData._id), {
         type: parentCommentId ? "reply" : "comment",
@@ -318,27 +289,12 @@ export default function createSoulpanaRoutes(io) {
         authorRole: authorRole,
         isReply:    !!parentCommentId,
       });
-
-      // ── Broadcast list-level activity so both sides can show unread badges ──
-      // Any socket on either side watching the question list receives this event.
-      const activityPayload = {
-        questionId,
-        authorRole,
-        authorName,
-        preview: text.trim().slice(0, 80),
-        isReply: !!parentCommentId,
-        commentId: String(commentData._id),
-      };
-      io?.emit("question_activity", activityPayload);
-
-      // ── Personal-room notifications so users NOT in the thread also get it ─
+      // Persist notifications so users not in the thread also get it.
       if (authorRole === "soultee") {
-        // Soultee replied → notify the question owner (student)
-        emitToUser(io, "student", question.userId, "new_comment", commentData);
-        emitToUser(io, "student", question.userId, "question_activity", activityPayload);
+        // Soultee replied ? notify the question owner (student)
 
         // Persist notification + FCM push to student
-        createNotification(io, {
+        createNotification({
           recipientUid:  question.userId,
           recipientRole: "student",
           type:          "new_comment",
@@ -353,7 +309,7 @@ export default function createSoulpanaRoutes(io) {
           },
         }).catch((err) => console.error("[Comment notify] error:", err.message));
       } else {
-        // Student commented → notify assigned soultee (if any) + soultees who replied before
+        // Student commented ? notify assigned soultee (if any) + soultees who replied before
         const notifyUids = new Set();
         if (question.assignedSoulteeUid) notifyUids.add(question.assignedSoulteeUid);
         const soulteeCommenters = await SoulpanaComment.distinct("authorId", {
@@ -362,11 +318,9 @@ export default function createSoulpanaRoutes(io) {
         });
         soulteeCommenters.forEach((uid) => notifyUids.add(uid));
 
-        // Socket emit (live) + persistent notification + FCM push for each soultee
+        // Persistent notification + FCM push for each soultee
         const notifyPromises = [...notifyUids].map((uid) => {
-          emitToUser(io, "soultee", uid, "new_comment", commentData);
-          emitToUser(io, "soultee", uid, "question_activity", activityPayload);
-          return createNotification(io, {
+          return createNotification({
             recipientUid:  uid,
             recipientRole: "soultee",
             type:          "new_comment",
@@ -393,7 +347,7 @@ export default function createSoulpanaRoutes(io) {
     }
   });
 
-  // ── POST /api/soulpana/:questionId/comments/:commentId/like ──────────────
+  // -- POST /api/soulpana/:questionId/comments/:commentId/like --------------
   router.post("/:questionId/comments/:commentId/like", async (req, res) => {
     try {
       const { userId } = req.body;
@@ -430,13 +384,6 @@ export default function createSoulpanaRoutes(io) {
         userDisliked: (updated.dislikes || []).includes(userId),
       };
 
-      io?.to(`question:${questionId}`)?.emit("comment_liked", payload);
-      io?.to(`question:${questionId}`)?.emit("comment_interaction_updated", {
-        questionId,
-        commentId,
-        type: "like",
-      });
-
       syncCommentInteractionToRTDB(questionId, commentId, {
         type: "like",
         likeCount: payload.likeCount,
@@ -450,7 +397,7 @@ export default function createSoulpanaRoutes(io) {
     }
   });
 
-  // ── POST /api/soulpana/:questionId/comments/:commentId/dislike ───────────
+  // -- POST /api/soulpana/:questionId/comments/:commentId/dislike -----------
   router.post("/:questionId/comments/:commentId/dislike", async (req, res) => {
     try {
       const { userId } = req.body;
@@ -487,13 +434,6 @@ export default function createSoulpanaRoutes(io) {
         userDisliked: (updated.dislikes || []).includes(userId),
       };
 
-      io?.to(`question:${questionId}`)?.emit("comment_disliked", payload);
-      io?.to(`question:${questionId}`)?.emit("comment_interaction_updated", {
-        questionId,
-        commentId,
-        type: "dislike",
-      });
-
       syncCommentInteractionToRTDB(questionId, commentId, {
         type: "dislike",
         likeCount: payload.likeCount,
@@ -507,7 +447,7 @@ export default function createSoulpanaRoutes(io) {
     }
   });
 
-  // ── GET /api/soulpana/detail/:id  ──  fetch a single question by MongoDB _id ──
+  // -- GET /api/soulpana/detail/:id  --  fetch a single question by MongoDB _id --
   router.get("/detail/:id", async (req, res) => {
     try {
       const question = await Soulpana.findById(req.params.id).lean();
@@ -522,7 +462,7 @@ export default function createSoulpanaRoutes(io) {
     }
   });
 
-  // ── GET /api/soulpana/:userId  ──  student: their own questions ──────────────
+  // -- GET /api/soulpana/:userId  --  student: their own questions --------------
   // NOTE: keep this AFTER the more-specific routes above
   router.get("/:userId", async (req, res) => {
     try {
@@ -534,7 +474,7 @@ export default function createSoulpanaRoutes(io) {
     }
   });
 
-  // ── PATCH /api/soulpana/:id/respond  ──  legacy single-response (kept for compat)
+  // -- PATCH /api/soulpana/:id/respond  --  legacy single-response (kept for compat)
   router.patch("/:id/respond", async (req, res) => {
     try {
       const { soulteeResponse, respondedBy, respondedByName } = req.body;
@@ -547,34 +487,25 @@ export default function createSoulpanaRoutes(io) {
         { new: true }
       );
       if (!updated) return res.status(404).json({ message: "Not found" });
-      emitToUser(io, "student", updated.userId, "question_answered", {
-        questionId: updated._id,
-        title: updated.title,
-        soulteeResponse: updated.soulteeResponse,
-        respondedByName: updated.respondedByName,
-        respondedAt: updated.respondedAt,
-      });
-      io?.emit("emotional_question_answered", { questionId: updated._id });
       res.json(updated);
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
   });
 
-  // ── PATCH /api/soulpana/:id/status  ──  generic status update ───────────────
+  // -- PATCH /api/soulpana/:id/status  --  generic status update ---------------
   router.patch("/:id/status", async (req, res) => {
     try {
       const { status } = req.body;
       const updated = await Soulpana.findByIdAndUpdate(req.params.id, { status }, { new: true });
       if (!updated) return res.status(404).json({ message: "Not found" });
-      io?.emit("emotional_question_status_changed", { questionId: updated._id, status: updated.status });
       res.json(updated);
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
   });
 
-  // ── POST /api/soulpana/:id/like  ──  toggle like ────────────────────────────
+  // -- POST /api/soulpana/:id/like  --  toggle like ----------------------------
   // Body: { userId }
   // Returns: { questionId, likeCount, dislikeCount, userLiked, userDisliked }
   router.post("/:id/like", async (req, res) => {
@@ -608,8 +539,6 @@ export default function createSoulpanaRoutes(io) {
       };
 
       // Broadcast to question room (open thread) and all connected clients (list views)
-      io?.to(`question:${req.params.id}`)?.emit("engagement_updated", payload);
-      io?.emit("engagement_updated", payload);
 
       // Fire-and-forget RTDB sync for Firebase real-time listeners
       syncEngagementToRTDB(req.params.id, payload.likeCount, payload.dislikeCount);
@@ -621,7 +550,7 @@ export default function createSoulpanaRoutes(io) {
     }
   });
 
-  // ── POST /api/soulpana/:id/dislike  ──  toggle dislike ──────────────────────
+  // -- POST /api/soulpana/:id/dislike  --  toggle dislike ----------------------
   // Body: { userId }
   // Returns: { questionId, likeCount, dislikeCount, userLiked, userDisliked }
   router.post("/:id/dislike", async (req, res) => {
@@ -654,9 +583,6 @@ export default function createSoulpanaRoutes(io) {
         userDisliked: updated.dislikes.includes(userId),
       };
 
-      io?.to(`question:${req.params.id}`)?.emit("engagement_updated", payload);
-      io?.emit("engagement_updated", payload);
-
       syncEngagementToRTDB(req.params.id, payload.likeCount, payload.dislikeCount);
 
       res.json(payload);
@@ -666,7 +592,7 @@ export default function createSoulpanaRoutes(io) {
     }
   });
 
-  // ── GET /api/soulpana/:id/engagement  ──  fetch counts + caller's reaction ──
+  // -- GET /api/soulpana/:id/engagement  --  fetch counts + caller's reaction --
   // Query: ?userId=<firebaseUid>  (optional — omit to skip user-specific flags)
   router.get("/:id/engagement", async (req, res) => {
     try {
@@ -687,9 +613,5 @@ export default function createSoulpanaRoutes(io) {
       res.status(500).json({ message: err.message });
     }
   });
-
-  // ── Socket: let clients join a question's room for live comments ─────────────
-  // Handled in realtimeServer.js via  socket.emit("join_question", { questionId })
-
   return router;
 }

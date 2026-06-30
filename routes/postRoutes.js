@@ -77,8 +77,8 @@ function classifyMime(mimeType) {
   return "video";
 }
 
-// ─── Factory: receives io for real-time events ───────────────────────────────
-export default function createPostRoutes(io) {
+// ─── Post routes ───────────────────────────────
+export default function createPostRoutes() {
   const router = express.Router();
 
   // ── GET /api/posts/categories ──────────────────────────────────────────────
@@ -189,16 +189,6 @@ export default function createPostRoutes(io) {
         mediaPath,
         mediaItems,
         status: "pending",
-      });
-
-      io?.emit("new_post_submitted", {
-        postId:    post._id,
-        title:     post.title,
-        category:  post.category,
-        userId:    post.userId,
-        userName:  post.userName,
-        userRole:  post.userRole,
-        mediaItems: post.mediaItems,
       });
 
       res.status(201).json({
@@ -345,12 +335,6 @@ export default function createPostRoutes(io) {
 
       syncPostEngagementToRTDB(req.params.id, likeCount).catch(() => {});
 
-      io?.emit("post_engagement_updated", {
-        postId: req.params.id, likeCount, dislikeCount,
-        liked:  !alreadyLiked,
-        userId,
-      });
-
       res.json({
         liked:        !alreadyLiked,
         disliked:     false,
@@ -389,12 +373,6 @@ export default function createPostRoutes(io) {
       const updated      = await Post.findByIdAndUpdate(req.params.id, update, { new: true });
       const likeCount    = updated.likes.length;
       const dislikeCount = updated.dislikes.length;
-
-      io?.emit("post_engagement_updated", {
-        postId: req.params.id, likeCount, dislikeCount,
-        disliked: !alreadyDisliked,
-        userId,
-      });
 
       res.json({
         disliked:    !alreadyDisliked,
@@ -451,19 +429,6 @@ export default function createPostRoutes(io) {
         text:       text.trim(),
       });
 
-      io?.emit("post_comment_added", {
-        postId:  req.params.id,
-        comment: {
-          _id:        comment._id,
-          authorName: comment.authorName,
-          authorRole: comment.authorRole,
-          text:       comment.text,
-          likes:      [],
-          likeCount:  0,
-          createdAt:  comment.createdAt,
-        },
-      });
-
       res.status(201).json({ comment });
     } catch (err) {
       res.status(500).json({ message: err.message });
@@ -505,7 +470,7 @@ export default function createPostRoutes(io) {
 }
 
 // ─── Shared helper: notify a user their post was approved/rejected ────────────
-export async function notifyPostAuthor(io, { recipientUid, recipientRole = "student", type, title, body, data = {} }) {
+export async function notifyPostAuthor({ recipientUid, recipientRole = "student", type, title, body, data = {} }) {
   const notification = await Notification.create({
     recipientUid,
     recipientRole,
@@ -513,16 +478,6 @@ export async function notifyPostAuthor(io, { recipientUid, recipientRole = "stud
     title,
     body,
     data,
-  });
-
-  io?.to(`${recipientRole}:${recipientUid}`)?.emit("new_notification", {
-    _id:       notification._id,
-    type,
-    title,
-    body,
-    data,
-    read:      false,
-    createdAt: notification.createdAt,
   });
 
   syncNotificationToRTDB(recipientUid, String(notification._id), {

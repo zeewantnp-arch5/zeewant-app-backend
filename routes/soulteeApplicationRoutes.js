@@ -19,8 +19,8 @@ const upload = multer({
   },
 });
 
-// Factory: receives `io` so approval events can be emitted to admins
-export default function createSoulteeApplicationRoutes(io) {
+// Soultee application route factory
+export default function createSoulteeApplicationRoutes() {
   const router = express.Router();
 
   const normalizeSoulteeCategory = (value) => {
@@ -110,16 +110,6 @@ export default function createSoulteeApplicationRoutes(io) {
           }],
         });
       }
-
-      // Notify admin dashboard in real-time
-      io?.to("admin:notifications")?.emit("new_soultee_application", {
-        applicationId:    application._id,
-        applicantName:    name,
-        category:         category || "",
-        completenessScore,
-        riskCount:        riskFlags.length,
-        submittedAt:      application.submittedAt,
-      });
 
       res.status(201).json({
         message:          "Application submitted successfully",

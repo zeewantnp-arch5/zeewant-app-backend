@@ -12,7 +12,6 @@ import FollowUpOtp from "../models/FollowUpCode.js";
 import { buildEsewaFormParams, verifyEsewaCallback } from "../services/esewaService.js";
 import { initiateKhaltiPayment, verifyKhaltiPayment } from "../services/khaltiService.js";
 import { sendPushNotification } from "../services/fcmService.js";
-import { buildPersonalRoom } from "../services/notificationService.js";
 import PDFDocument from "pdfkit";
 
 const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
@@ -41,7 +40,7 @@ const router = express.Router();
 //  HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function activateSubscription(payment, io = null) {
+async function activateSubscription(payment) {
   const startDate = new Date();
   const soultee = await Soultee.findOne({ firebaseUid: payment.soulteeId })
     .select("durationMinutes feePerSession")
@@ -118,39 +117,6 @@ async function activateSubscription(payment, io = null) {
     console.error("[activateSubscription] Session create error:", err.message);
   }
 
-  // Notify soultee dashboard to refresh stats in real-time
-  if (io) {
-    io?.to(`soultee:${payment.soulteeId}`)?.emit("stats:updated");
-
-    // Emit real-time unlock to the student so chat unlocks instantly without polling
-    const studentRoom = buildPersonalRoom("student", payment.userId);
-    const roomId = existingLink?._id?.toString() ?? null;
-    io?.to(studentRoom)?.emit("chat_unlocked", {
-      roomId,
-      soulteeId: payment.soulteeId,
-      method:    payment.method,
-      expiryDate: expiryDate.toISOString(),
-    });
-    if (payment.method === "cos") {
-      io?.to(studentRoom)?.emit("cos_request_approved", {
-        transactionUuid: payment.transactionUuid,
-        roomId,
-        soulteeId:  payment.soulteeId,
-        expiryDate: expiryDate.toISOString(),
-      });
-    } else {
-      io?.to(studentRoom)?.emit("subscription_activated", {
-        roomId,
-        soulteeId:  payment.soulteeId,
-        method:     payment.method,
-        expiryDate: expiryDate.toISOString(),
-      });
-    }
-    console.log(`[Payment] chat_unlocked emitted to ${studentRoom} (method=${payment.method})`);
-  } else {
-    console.warn("[Payment] io not available — chat_unlocked not emitted");
-  }
-
   const expiryStr = expiryDate.toLocaleString("en-US", {
     day: "numeric", month: "long", year: "numeric",
     hour: "numeric", minute: "2-digit",
@@ -179,7 +145,7 @@ const KHALTI_FAILED_STATUSES = new Set([
   "Partially refunded",
 ]);
 
-async function reconcileKhaltiPayment(payment, io = null) {
+async function reconcileKhaltiPayment(payment) {
   if (!payment?.khaltiPidx) {
     return { status: payment?.status || "pending" };
   }
@@ -201,7 +167,7 @@ async function reconcileKhaltiPayment(payment, io = null) {
     );
 
     if (completedPayment) {
-      await activateSubscription(completedPayment, io);
+      await activateSubscription(completedPayment);
       return { status: "completed", payment: completedPayment, lookup };
     }
 
@@ -480,7 +446,7 @@ router.post("/esewa/activate", async (req, res) => {
       return res.json({ success: true, message: "Already activated" });
     }
 
-    await activateSubscription(payment, req.app.get("io"));
+    await activateSubscription(payment);
     res.json({ success: true, message: "Subscription activated" });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -552,7 +518,7 @@ router.post("/esewa/sdk-verify", async (req, res) => {
       return res.json({ success: true, message: "Already activated" });
     }
 
-    await activateSubscription(payment, req.app.get("io"));
+    await activateSubscription(payment);
     res.json({ success: true, message: "Subscription activated" });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -589,7 +555,7 @@ router.get("/khalti/callback", async (req, res) => {
       return _khaltiResultPage(res, true);
     }
 
-    const result = await reconcileKhaltiPayment(payment, req.app.get("io"));
+    const result = await reconcileKhaltiPayment(payment);
 
     if (result.status === "completed") {
       return _khaltiResultPage(res, true);
@@ -628,7 +594,7 @@ router.get("/verify/:transactionUuid", async (req, res) => {
     if (!payment) return res.status(404).json({ message: "Payment not found" });
 
     if (payment.method === "khalti" && payment.status === "pending" && payment.khaltiPidx) {
-      const result = await reconcileKhaltiPayment(payment, req.app.get("io"));
+      const result = await reconcileKhaltiPayment(payment);
       payment = (result.payment || payment);
       payment.status = result.status;
     }
@@ -713,7 +679,7 @@ router.post("/esewa/recover", async (req, res) => {
       return res.json({ success: true, message: "Already activated" });
     }
 
-    await activateSubscription(updated, req.app.get("io"));
+    await activateSubscription(updated);
     res.json({ success: true, message: "Subscription activated via recovery" });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -757,9 +723,6 @@ router.post("/fix-sessions", async (req, res) => {
         created++;
       }
     }
-
-    const io = req.app.get("io");
-    if (io) io?.to(`soultee:${soulteeId}`)?.emit("stats:updated");
 
     res.json({ message: `Fixed: ${created} sessions created out of ${payments.length} payments`, created });
   } catch (err) {
@@ -825,16 +788,6 @@ router.post("/cos", async (req, res) => {
       verificationStatus: "pending_verification",
     });
 
-    const io = req.app.get("io");
-    if (io) {
-      io?.of("/analytics")?.emit("cos_update", {
-        action: "new",
-        transactionUuid,
-        amount: fee,
-        ts: Date.now(),
-      });
-    }
-
     return res.json({
       success: true,
       transactionUuid,
@@ -869,15 +822,6 @@ router.post("/upload-proof", async (req, res) => {
     };
     await payment.save();
 
-    const io = req.app.get("io");
-    if (io) {
-      io?.of("/analytics")?.to("analytics_room")?.emit("analytics_snapshot", {
-        type: "cos_proof_uploaded",
-        ts: Date.now(),
-        transactionUuid,
-      });
-    }
-
     return res.json({ success: true, message: "Proof uploaded successfully." });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -900,8 +844,6 @@ router.post("/verify-cos", requireAdminJwt, async (req, res) => {
       return res.json({ success: true, message: "Already approved" });
     }
 
-    const io = req.app.get("io");
-
     if (action === "approve") {
       const updated = await Payment.findOneAndUpdate(
         { transactionUuid, method: "cos" },
@@ -915,8 +857,7 @@ router.post("/verify-cos", requireAdminJwt, async (req, res) => {
         },
         { new: true }
       );
-      await activateSubscription(updated, io);
-      if (io) io?.of("/analytics")?.emit("cos_update", { action: "approved", transactionUuid });
+      await activateSubscription(updated);
       return res.json({ success: true, message: "COS payment approved and subscription activated." });
     }
 
@@ -936,15 +877,6 @@ router.post("/verify-cos", requireAdminJwt, async (req, res) => {
         : "Your Cash on Service payment was rejected. Please re-upload a valid proof.",
       data: { type: "cos_rejected", transactionUuid, screen: "cos_status" },
     }).catch(() => {});
-
-    if (io) {
-      io?.of("/analytics")?.emit("cos_update", { action: "rejected", transactionUuid });
-      // Notify student in real-time so their chat screen updates immediately
-      io?.to(buildPersonalRoom("student", payment.userId))?.emit("cos_request_rejected", {
-        transactionUuid,
-        reason: reason || "Payment verification failed",
-      });
-    }
     return res.json({ success: true, message: "COS payment rejected." });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -988,39 +920,7 @@ router.delete("/cos/:transactionUuid", requireAdminJwt, async (req, res) => {
     });
     if (!payment) return res.status(404).json({ message: "COS payment not found." });
 
-    // Emit real-time event so all admin clients update instantly
-    const io = req.app.get("io");
-    if (io) {
-      io?.of("/analytics")?.emit("cos_update", { action: "deleted", transactionUuid: req.params.transactionUuid });
-    }
-
     return res.json({ success: true, message: "COS record deleted." });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
-
-// GET /api/payments/cos-status/:transactionUuid
-// Student polls COS verification status
-router.get("/cos-status/:transactionUuid", async (req, res) => {
-  try {
-    const payment = await Payment.findOne({
-      transactionUuid: req.params.transactionUuid,
-      method: "cos",
-    }).lean();
-    if (!payment) return res.status(404).json({ message: "Payment not found" });
-
-    return res.json({
-      transactionUuid:    payment.transactionUuid,
-      status:             payment.status,
-      paymentStatus:      payment.paymentStatus,
-      verificationStatus: payment.verificationStatus,
-      amount:             payment.amount,
-      proofUploaded:      !!payment.proofUpload?.url,
-      rejectionReason:    payment.rejectionReason,
-      approvedAt:         payment.approvedAt,
-      createdAt:          payment.createdAt,
-    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

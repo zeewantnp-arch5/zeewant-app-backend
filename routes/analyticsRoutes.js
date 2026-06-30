@@ -870,16 +870,6 @@ router.delete("/souljar/:id", requireAdmin, requireAnalyticsAccess, async (req, 
       console.warn("Audit log write failed:", auditErr.message);
     }
 
-    const io = req.app.get("io");
-    if (io) {
-      io?.of("/analytics")?.to("analytics_room")?.emit("analytics_snapshot", {
-        type: "souljar_deleted",
-        ts: Date.now(),
-        id: String(deleted._id),
-      });
-
-    }
-
     return res.json({
       message: "Souljar entry deleted",
       id: String(deleted._id),
