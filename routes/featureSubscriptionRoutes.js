@@ -20,7 +20,15 @@ const BACKEND_URL         = (
   process.env.BACKEND_URL || "http://localhost:5000"
 ).replace(/\/+$/, "");
 
-const VALID_FEATURES = new Set(["soulway", "souljar", "chat"]);
+const VALID_FEATURES = new Set(["soulway", "souljar"]);
+
+// Server-authoritative pricing per (feature, planType)
+const PLAN_PRICING = {
+  souljar_monthly:  99,
+  souljar_annual:   999,
+  soulway_monthly:  399,
+  soulway_annual:   3999,
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function esewaSign(totalAmount, transactionUuid) {
@@ -50,7 +58,7 @@ const KHALTI_FAILED  = new Set(["User canceled", "Expired", "Refunded", "Partial
 router.get("/status/:userId/:feature", async (req, res) => {
   const { userId, feature } = req.params;
   if (!VALID_FEATURES.has(feature))
-    return res.status(400).json({ message: "Invalid feature. Use 'soulway', 'souljar', or 'chat'." });
+    return res.status(400).json({ message: "Invalid feature. Use 'soulway' or 'souljar'." });
   try {
     const access = await getOrInitFeatureAccess(userId, feature);
     res.json({ ...access, feature, userId });
@@ -66,10 +74,9 @@ router.get("/status/:userId/:feature", async (req, res) => {
 router.get("/dashboard/:userId", async (req, res) => {
   const { userId } = req.params;
   try {
-    const [soulway, souljar, chat] = await Promise.all([
+    const [soulway, souljar] = await Promise.all([
       getOrInitFeatureAccess(userId, "soulway"),
       getOrInitFeatureAccess(userId, "souljar"),
-      getOrInitFeatureAccess(userId, "chat"),
     ]);
     // Recent payments for payment history
     const payments = await FeaturePayment.find({ userId, status: "completed" })
@@ -77,7 +84,7 @@ router.get("/dashboard/:userId", async (req, res) => {
       .limit(20)
       .lean();
 
-    res.json({ soulway, souljar, chat, payments });
+    res.json({ soulway, souljar, payments });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -90,7 +97,7 @@ router.get("/dashboard/:userId", async (req, res) => {
 //           { transactionId, formUrl }    for eSewa
 // ─────────────────────────────────────────────────────────────────────────────
 router.post("/payment/initiate", async (req, res) => {
-  const { userId, feature, method } = req.body;
+  const { userId, feature, method, planType = "monthly" } = req.body;
 
   if (!userId || !feature || !method)
     return res.status(400).json({ message: "userId, feature, and method are required." });
@@ -98,23 +105,28 @@ router.post("/payment/initiate", async (req, res) => {
     return res.status(400).json({ message: "Invalid feature." });
   if (!["esewa", "khalti"].includes(method))
     return res.status(400).json({ message: "method must be 'esewa' or 'khalti'." });
+  if (!["monthly", "annual"].includes(planType))
+    return res.status(400).json({ message: "planType must be 'monthly' or 'annual'." });
 
   // Server-side price — never trust client
-  const amount = FEATURE_PRICING[feature];
+  const priceKey = `${feature}_${planType}`;
+  const amount   = PLAN_PRICING[priceKey];
+  if (!amount) return res.status(400).json({ message: "Invalid feature/planType combination." });
 
   const transactionUuid = `FSB-${feature.toUpperCase()}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
 
   try {
     const payment = await FeaturePayment.create({
-      userId, feature, amount, method, transactionUuid,
+      userId, feature, planType, amount, method, transactionUuid,
     });
 
     if (method === "khalti") {
-      const featureName = feature === "soulway" ? "SoulWay" : feature === "chat" ? "Soultee Chat" : "SoulJar";
+      const featureName = feature === "soulway" ? "SoulWay" : "SoulJar";
+      const planLabel   = `${featureName} ${planType === "annual" ? "Annual" : "Monthly"}`;
       const { pidx, paymentUrl } = await initiateKhaltiPayment({
         amount,
         transactionUuid,
-        planDisplayName: `${featureName} Monthly Plan`,
+        planDisplayName: `${planLabel} Plan`,
       });
 
       await FeaturePayment.updateOne({ _id: payment._id }, { khaltiPidx: pidx });
