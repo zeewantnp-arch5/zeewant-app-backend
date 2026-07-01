@@ -962,6 +962,34 @@ router.get("/pending-cos", requireAdminJwt, async (req, res) => {
   }
 });
 
+// DELETE /api/payments/esewa/:transactionUuid — Admin hard-delete an eSewa record
+router.delete("/esewa/:transactionUuid", requireAdminJwt, async (req, res) => {
+  try {
+    const payment = await Payment.findOneAndDelete({
+      transactionUuid: req.params.transactionUuid,
+      method: "esewa",
+    });
+    if (!payment) return res.status(404).json({ message: "eSewa payment not found." });
+    return res.json({ success: true, message: "eSewa record deleted." });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// DELETE /api/payments/khalti/:transactionUuid — Admin hard-delete a Khalti record
+router.delete("/khalti/:transactionUuid", requireAdminJwt, async (req, res) => {
+  try {
+    const payment = await Payment.findOneAndDelete({
+      transactionUuid: req.params.transactionUuid,
+      method: "khalti",
+    });
+    if (!payment) return res.status(404).json({ message: "Khalti payment not found." });
+    return res.json({ success: true, message: "Khalti record deleted." });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 // DELETE /api/payments/cos/:transactionUuid — Admin hard-delete a COS record
 router.delete("/cos/:transactionUuid", requireAdminJwt, async (req, res) => {
   try {
