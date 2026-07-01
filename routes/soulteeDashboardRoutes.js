@@ -1155,14 +1155,15 @@ export default function createSoulteeDashboardRoutes() {
   router.get("/:soulteeUid/fee", async (req, res) => {
     try {
       const soultee = await Soultee.findOne({ firebaseUid: req.params.soulteeUid })
-        .select("name feePerSession currency")
+        .select("name feePerSession currency durationMinutes")
         .lean();
       if (!soultee) return res.status(404).json({ message: "Soultee not found" });
       res.json({
-        soulteeId: req.params.soulteeUid,
-        name: soultee.name,
-        feePerSession: soultee.feePerSession ?? 0,
-        currency: soultee.currency ?? "NPR",
+        soulteeId:       req.params.soulteeUid,
+        name:            soultee.name,
+        feePerSession:   soultee.feePerSession ?? 0,
+        currency:        soultee.currency ?? "NPR",
+        durationMinutes: soultee.durationMinutes ?? 60,
       });
     } catch (err) {
       res.status(500).json({ message: err.message });
