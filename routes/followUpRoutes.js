@@ -72,6 +72,8 @@ export default function createFollowUpRoutes() {
   // ─── GET /api/follow-up/:roomId/access-check ───────────────────────────────
   // Lightweight endpoint called before opening chat.
   // Returns { canAccess: bool, reason: string }
+  // reason values: session_active | followup_active | session_completed |
+  //                followup_expired | chat_locked | no_link
   router.get("/:roomId/access-check", async (req, res) => {
     try {
       const { roomId } = req.params;
@@ -86,39 +88,33 @@ export default function createFollowUpRoutes() {
       }).lean();
       if (activeFollowUp) return res.json({ canAccess: true, reason: "followup_active" });
 
-      // Chat is locked if the flag is set OR link.status is "ended"
-      const isLocked = link.chatLocked === true || link.status === "ended";
+      // Fetch the latest session for this soultee-student pair
+      const latestSession = await Session.findOne({
+        soulteeFirebaseUid: link.soulteeFirebaseUid,
+        studentFirebaseUid: link.studentFirebaseUid,
+      }).sort({ createdAt: -1 }).lean();
 
-      if (isLocked) {
-        // Only block if the LATEST session is completed.
-        // If the user already paid again (new active session), allow access.
-        const latestSession = await Session.findOne({
-          soulteeFirebaseUid: link.soulteeFirebaseUid,
-          studentFirebaseUid: link.studentFirebaseUid,
-        }).sort({ createdAt: -1 }).lean();
-
-        if (latestSession?.status === "completed") {
-          // A follow-up that was truly activated (used) and then expired has activatedAt set.
-          // A superseded/re-requested OTP that was never verified has activatedAt = null.
-          const trulyExpiredFollowUp = await FollowUpOtp.findOne({
-            roomId,
-            status:      "EXPIRED",
-            activatedAt: { $ne: null },
-          }).lean();
-
-          if (trulyExpiredFollowUp) {
-            // Both session AND follow-up are done — new payment required
-            return res.json({ canAccess: false, reason: "followup_expired" });
-          }
-          // Session ended but follow-up not yet used — go to chat, show Follow-Up button
-          return res.json({ canAccess: false, reason: "session_completed" });
-        }
+      // Active session (upcoming = paid but not started, ongoing = in progress) → allow
+      if (latestSession?.status === "upcoming" || latestSession?.status === "ongoing") {
+        return res.json({ canAccess: true, reason: "session_active" });
       }
 
-      res.json({
-        canAccess: !isLocked,
-        reason:    isLocked ? "chat_locked" : "session_active",
-      });
+      // Completed session — determine which gate to show
+      if (latestSession?.status === "completed") {
+        const trulyExpiredFollowUp = await FollowUpOtp.findOne({
+          roomId,
+          status:      "EXPIRED",
+          activatedAt: { $ne: null },
+        }).lean();
+        if (trulyExpiredFollowUp) {
+          return res.json({ canAccess: false, reason: "followup_expired" });
+        }
+        return res.json({ canAccess: false, reason: "session_completed" });
+      }
+
+      // No session at all (brand new link or explicit lock) → must pay first
+      const isExplicitlyLocked = link.chatLocked === true || link.status === "ended";
+      res.json({ canAccess: false, reason: isExplicitlyLocked ? "chat_locked" : "chat_locked" });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
