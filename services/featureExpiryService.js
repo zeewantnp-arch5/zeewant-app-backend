@@ -1,5 +1,6 @@
 import FeatureSubscription from "../models/FeatureSubscription.js";
 import { sendPushNotification } from "./fcmService.js";
+import { FEATURE_PRICING, ANNUAL_PRICING } from "./featureSubscriptionService.js";
 
 const DAY_MS = 86_400_000;
 
@@ -86,30 +87,33 @@ async function _processSubscriptionNotifications(now) {
   }).lean();
 
   for (const sub of activeSubs) {
-    const days = daysUntil(sub.subscriptionEndDate);
-    const label = featureLabel(sub.feature);
-    const price = sub.feature === "soulway" ? 399 : 99;
+    const days     = daysUntil(sub.subscriptionEndDate);
+    const label    = featureLabel(sub.feature);
+    const isAnnual = sub.planType === "annual";
+    const renewPrice = isAnnual
+      ? (sub.feature === "souljar" ? `NPR ${ANNUAL_PRICING.souljar}/year` : `NPR ${ANNUAL_PRICING.souljar_soulway}/year`)
+      : `NPR ${FEATURE_PRICING[sub.feature] ?? 99}/month`;
 
     if (days === 7 && !sub.notifiedAt7Days) {
       await sendPushNotification(sub.userId, {
-        title: `📅 ${label} Renews in 7 Days`,
-        body: `Your ${label} subscription expires in 7 days. Renew for NPR ${price}/month.`,
-        data: { type: "feature_sub_expiry_reminder", feature: sub.feature, daysLeft: "7" },
+        title: `📅 ${label} ${isAnnual ? "Annual Plan" : "Subscription"} Renews in 7 Days`,
+        body: `Your ${label} ${isAnnual ? "annual plan" : "subscription"} expires in 7 days. Renew for ${renewPrice}.`,
+        data: { type: "feature_sub_expiry_reminder", feature: sub.feature, daysLeft: "7", planType: sub.planType ?? "monthly" },
       }).catch(() => {});
       await FeatureSubscription.updateOne({ _id: sub._id }, { notifiedAt7Days: true });
     }
 
     if (days === 3 && !sub.notifiedAt3Days) {
       await sendPushNotification(sub.userId, {
-        title: `⚠️ ${label} Expires in 3 Days`,
-        body: `Renew your ${label} subscription to avoid losing access.`,
-        data: { type: "feature_sub_expiry_reminder", feature: sub.feature, daysLeft: "3" },
+        title: `⚠️ ${label} ${isAnnual ? "Annual Plan" : "Subscription"} Expires in 3 Days`,
+        body: `Renew your ${label} ${isAnnual ? "annual plan" : "subscription"} (${renewPrice}) to avoid losing access.`,
+        data: { type: "feature_sub_expiry_reminder", feature: sub.feature, daysLeft: "3", planType: sub.planType ?? "monthly" },
       }).catch(() => {});
       await FeatureSubscription.updateOne({ _id: sub._id }, { notifiedAt3Days: true });
     }
   }
 
-  // Expiry day (expired in the last 24h, not yet notified)
+  // Expiry day — lock and notify
   const justExpiredSub = await FeatureSubscription.find({
     status: "active",
     subscriptionEndDate: { $lte: now, $gt: new Date(now - DAY_MS) },
@@ -117,17 +121,37 @@ async function _processSubscriptionNotifications(now) {
   }).lean();
 
   for (const sub of justExpiredSub) {
-    const label = featureLabel(sub.feature);
-    const price = sub.feature === "soulway" ? 399 : 99;
+    const label    = featureLabel(sub.feature);
+    const isAnnual = sub.planType === "annual";
+    const renewPrice = isAnnual
+      ? (sub.feature === "souljar" ? `NPR ${ANNUAL_PRICING.souljar}/year` : `NPR ${ANNUAL_PRICING.souljar_soulway}/year`)
+      : `NPR ${FEATURE_PRICING[sub.feature] ?? 99}/month`;
+
     await sendPushNotification(sub.userId, {
-      title: `🔒 ${label} Subscription Expired`,
-      body: `Your ${label} access has ended. Renew for NPR ${price}/month to continue.`,
-      data: { type: "feature_sub_expired", feature: sub.feature },
+      title: `🔒 ${label} ${isAnnual ? "Annual Plan" : "Subscription"} Expired`,
+      body: `Your ${label} access has ended. Tap to renew for ${renewPrice} and restore access.`,
+      data: {
+        type:     "feature_sub_expired",
+        feature:  sub.feature,
+        planType: sub.planType ?? "monthly",
+        screen:   "subscriptions",
+      },
     }).catch(() => {});
+
+    // Lock this feature
     await FeatureSubscription.updateOne(
       { _id: sub._id },
       { status: "expired", notifiedAtExpiry: true }
     );
+
+    // If annual bundle — also lock the paired feature (soulway ↔ souljar)
+    if (isAnnual && (sub.feature === "souljar" || sub.feature === "soulway")) {
+      const paired = sub.feature === "souljar" ? "soulway" : "souljar";
+      await FeatureSubscription.updateOne(
+        { userId: sub.userId, feature: paired, planType: "annual", status: "active" },
+        { status: "expired", notifiedAtExpiry: true }
+      );
+    }
   }
 }
 

@@ -9,8 +9,15 @@ export const FEATURE_PRICING = {
   chat:    199, // NPR/month
 };
 
-const TRIAL_DAYS        = 7;
-const SUBSCRIPTION_DAYS = 30;
+// Annual plan prices (includes bundle)
+export const ANNUAL_PRICING = {
+  souljar:        999,  // SoulJar annual
+  souljar_soulway: 3999, // SoulJar + SoulWay annual bundle
+};
+
+const TRIAL_DAYS             = 7;
+const SUBSCRIPTION_DAYS      = 30;
+const ANNUAL_SUBSCRIPTION_DAYS = 365;
 
 // ── Access computation (pure, no DB) ─────────────────────────────────────────
 export function computeAccess(sub) {
@@ -90,25 +97,25 @@ export async function getOrInitFeatureAccess(userId, feature) {
   return computeAccess(sub);
 }
 
-// ── Activate subscription after successful payment ───────────────────────────
-export async function activateFeatureSubscription(payment) {
-  const { userId, feature, _id: paymentId, method, amount } = payment;
+// ── Activate a single feature subscription (monthly or annual) ───────────────
+async function _activateOne({ userId, feature, paymentId, method, amount, planType }) {
   const now = new Date();
+  const days = planType === "annual" ? ANNUAL_SUBSCRIPTION_DAYS : SUBSCRIPTION_DAYS;
   const subscriptionStartDate = now;
   const subscriptionEndDate   = new Date(now);
-  subscriptionEndDate.setDate(subscriptionEndDate.getDate() + SUBSCRIPTION_DAYS);
+  subscriptionEndDate.setDate(subscriptionEndDate.getDate() + days);
 
-  const sub = await FeatureSubscription.findOneAndUpdate(
+  return FeatureSubscription.findOneAndUpdate(
     { userId, feature },
     {
       $set: {
         status: "active",
+        planType,
         subscriptionStartDate,
         subscriptionEndDate,
         latestPaymentId:     paymentId,
         latestPaymentMethod: method,
         latestAmountPaid:    amount,
-        // Reset expiry notification flags for the new cycle
         notifiedAt7Days:  false,
         notifiedAt3Days:  false,
         notifiedAtExpiry: false,
@@ -116,24 +123,59 @@ export async function activateFeatureSubscription(payment) {
     },
     { upsert: true, new: true }
   );
+}
 
-  const label = feature === "soulway" ? "SoulWay" : feature === "chat" ? "Soultee Chat" : "SoulJar";
+// ── Activate subscription after successful payment ───────────────────────────
+// Detects annual plan by amount and activates 1 or 2 features accordingly.
+export async function activateFeatureSubscription(payment) {
+  const { userId, feature, _id: paymentId, method, amount } = payment;
+
+  // Determine plan type and which features to activate
+  const isAnnualBundle  = amount >= ANNUAL_PRICING.souljar_soulway;
+  const isAnnualSouljar = !isAnnualBundle && amount >= ANNUAL_PRICING.souljar;
+  const planType        = (isAnnualBundle || isAnnualSouljar) ? "annual" : "monthly";
+
+  // Features to activate for this payment
+  const featuresToActivate = isAnnualBundle
+    ? ["souljar", "soulway"]
+    : [feature || "souljar"];
+
+  const activated = await Promise.all(
+    featuresToActivate.map((f) =>
+      _activateOne({ userId, feature: f, paymentId, method, amount, planType })
+    )
+  );
+
+  const sub = activated[0];
+  const subscriptionEndDate = sub.subscriptionEndDate;
   const endStr = subscriptionEndDate.toLocaleDateString("en-US", {
     day: "numeric", month: "long", year: "numeric",
   });
 
+  const planLabel = isAnnualBundle
+    ? "SoulJar + SoulWay Annual Bundle"
+    : isAnnualSouljar
+    ? "SoulJar Annual"
+    : feature === "soulway" ? "SoulWay" : feature === "chat" ? "Soultee Chat" : "SoulJar";
+
   sendPushNotification(userId, {
-    title: `✅ ${label} Subscription Activated`,
-    body:  `Your ${label} access is now active until ${endStr}.`,
+    title: `✅ ${planLabel} Activated`,
+    body:  `Your access is now active until ${endStr}. ${planType === "annual" ? "Enjoy your year!" : ""}`.trim(),
     data: {
       type:                "feature_subscription_activated",
-      feature,
+      feature:             featuresToActivate[0],
+      planType,
       subscriptionEndDate: subscriptionEndDate.toISOString(),
-      screen:              feature,
+      screen:              featuresToActivate[0],
     },
   }).catch(() => {});
 
   return sub;
+}
+
+// ── Activate annual bundle directly (called from payment route for NPR 3999) ──
+export async function activateAnnualBundle({ userId, paymentId, method, amount }) {
+  return activateFeatureSubscription({ userId, feature: "souljar", _id: paymentId, method, amount });
 }
 
 // ── Admin: list all subscriptions with pagination ────────────────────────────

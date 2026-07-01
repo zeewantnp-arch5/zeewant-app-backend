@@ -23,6 +23,9 @@ const featureSubscriptionSchema = new mongoose.Schema(
     subscriptionStartDate: { type: Date, default: null },
     subscriptionEndDate:   { type: Date, default: null },
 
+    // Plan type — determines subscription duration
+    planType: { type: String, enum: ["monthly", "annual"], default: "monthly" },
+
     // Latest payment reference
     latestPaymentId:     { type: mongoose.Schema.Types.ObjectId, ref: "FeaturePayment", default: null },
     latestPaymentMethod: { type: String, enum: ["esewa", "khalti", null], default: null },
