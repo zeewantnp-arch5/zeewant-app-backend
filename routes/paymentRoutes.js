@@ -99,12 +99,18 @@ async function activateSubscription(payment) {
       ).catch(() => {});
     }
 
+    // Use payment.durationMinutes if the student chose a specific duration,
+    // otherwise fall back to the soultee's default session length.
+    const sessionDuration = (payment.durationMinutes && payment.durationMinutes > 0)
+      ? payment.durationMinutes
+      : (soultee?.durationMinutes || 30);
+
     const sess = await Session.create({
       soulteeFirebaseUid: payment.soulteeId,
       studentFirebaseUid: payment.userId,
       studentName:      existingLink?.studentName || "Student",
       scheduledAt:      new Date(),
-      durationMinutes:  soultee?.durationMinutes || 30,
+      durationMinutes:  sessionDuration,
       sessionFee:       payment.amount,
       commissionRate,
       soulteeEarnings,
@@ -112,7 +118,28 @@ async function activateSubscription(payment) {
       sessionType:      "chat",
       status:           "upcoming",
     });
-    console.log(`[Payment] Session created: ${sess._id} fee=${sess.sessionFee} commission=${commissionRate}% soulteeEarnings=${soulteeEarnings} soultee=${payment.soulteeId}`);
+
+    // Notify soultee that a new session is ready to start
+    if (existingLink) {
+      const { createNotification } = await import("../services/notificationService.js");
+      createNotification({
+        recipientUid:  payment.soulteeId,
+        recipientRole: "soultee",
+        type:          "session_paid",
+        title:         "Session Ready to Start",
+        body:          `${existingLink.studentName || "A student"} has paid for a ${sessionDuration}-min session. Tap to start.`,
+        data: {
+          type:       "session_paid",
+          roomId:     existingLink._id.toString(),
+          sessionId:  sess._id.toString(),
+          studentUid: payment.userId,
+          durationMinutes: String(sessionDuration),
+          screen:     "chat",
+        },
+      }).catch(() => {});
+    }
+
+    console.log(`[Payment] Session created: ${sess._id} duration=${sessionDuration}min fee=${sess.sessionFee} commission=${commissionRate}% soulteeEarnings=${soulteeEarnings} soultee=${payment.soulteeId}`);
   } catch (err) {
     console.error("[activateSubscription] Session create error:", err.message);
   }
@@ -198,11 +225,12 @@ async function reconcileKhaltiPayment(payment) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // POST /api/payments/initiate
-// Body: { userId, soulteeId, method: 'khalti' }
+// Body: { userId, soulteeId, method: 'khalti'|'esewa', durationMinutes? }
 // Fee is fetched from the soultee's profile — never trusted from client.
+// durationMinutes overrides the soultee's default; fee is scaled per-minute.
 router.post("/initiate", async (req, res) => {
   try {
-    const { userId, soulteeId, method } = req.body;
+    const { userId, soulteeId, method, durationMinutes: chosenDuration } = req.body;
     if (!userId || !soulteeId || !method) {
       return res.status(400).json({ message: "userId, soulteeId, and method are required" });
     }
@@ -212,23 +240,33 @@ router.post("/initiate", async (req, res) => {
 
     // Fetch fee from soultee profile — client cannot manipulate this
     const soultee = await Soultee.findOne({ firebaseUid: soulteeId })
-      .select("name feePerSession currency")
+      .select("name feePerSession currency durationMinutes")
       .lean();
     if (!soultee) return res.status(404).json({ message: "Soultee not found" });
 
-    const fee = Number(soultee.feePerSession ?? 0);
-    if (fee <= 0) {
+    const baseFee = Number(soultee.feePerSession ?? 0);
+    if (baseFee <= 0) {
       return res.status(400).json({ message: "This Soultee has not set a consultation fee yet." });
     }
+
+    // Scale fee proportionally if student chose a different duration
+    const validDurations = [5, 10, 15, 20, 30, 45, 60, 90, 120];
+    const baseDuration = Number(soultee.durationMinutes) > 0 ? Number(soultee.durationMinutes) : 60;
+    const chosenNum = Number(chosenDuration);
+    const resolvedDuration = validDurations.includes(chosenNum) ? chosenNum : baseDuration;
+    const fee = resolvedDuration === baseDuration
+      ? baseFee
+      : Math.max(1, Math.round((baseFee / baseDuration) * resolvedDuration));
 
     const transactionUuid = crypto.randomBytes(6).toString("hex");
 
     const payment = await Payment.create({
       userId,
       soulteeId,
-      planId:   null,
-      planName: "session",
-      amount:   fee,
+      planId:          null,
+      planName:        "session",
+      durationMinutes: resolvedDuration,
+      amount:          fee,
       method,
       transactionUuid,
     });
@@ -239,6 +277,7 @@ router.post("/initiate", async (req, res) => {
         method: "esewa",
         transactionUuid,
         amount: fee,
+        durationMinutes: resolvedDuration,
         currency: soultee.currency ?? "NPR",
         formUrl: `${process.env.BACKEND_URL || "http://localhost:5000"}/api/payments/esewa/form/${transactionUuid}`,
         formAction,
@@ -250,7 +289,7 @@ router.post("/initiate", async (req, res) => {
     const { pidx, paymentUrl } = await initiateKhaltiPayment({
       amount: fee,
       transactionUuid,
-      planDisplayName: `Session with ${soultee.name}`,
+      planDisplayName: `${resolvedDuration}-min session with ${soultee.name}`,
     });
     await Payment.findByIdAndUpdate(payment._id, { khaltiPidx: pidx });
 
@@ -260,6 +299,7 @@ router.post("/initiate", async (req, res) => {
       pidx,
       paymentUrl,
       amount: fee,
+      durationMinutes: resolvedDuration,
       currency: soultee.currency ?? "NPR",
     });
   } catch (err) {
@@ -735,23 +775,31 @@ router.post("/fix-sessions", async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // POST /api/payments/cos
-// Body: { userId, soulteeId }
+// Body: { userId, soulteeId, durationMinutes? }
 router.post("/cos", async (req, res) => {
   try {
-    const { userId, soulteeId } = req.body;
+    const { userId, soulteeId, durationMinutes: chosenDuration } = req.body;
     if (!userId || !soulteeId) {
       return res.status(400).json({ message: "userId and soulteeId are required" });
     }
 
     const soultee = await Soultee.findOne({ firebaseUid: soulteeId })
-      .select("name feePerSession currency")
+      .select("name feePerSession currency durationMinutes")
       .lean();
     if (!soultee) return res.status(404).json({ message: "Soultee not found" });
 
-    const fee = Number(soultee.feePerSession ?? 0);
-    if (fee <= 0) {
+    const baseFee = Number(soultee.feePerSession ?? 0);
+    if (baseFee <= 0) {
       return res.status(400).json({ message: "This Soultee has not set a consultation fee yet." });
     }
+
+    const validDurations = [5, 10, 15, 20, 30, 45, 60, 90, 120];
+    const baseDuration = Number(soultee.durationMinutes) > 0 ? Number(soultee.durationMinutes) : 60;
+    const chosenNum = Number(chosenDuration);
+    const resolvedDuration = validDurations.includes(chosenNum) ? chosenNum : baseDuration;
+    const fee = resolvedDuration === baseDuration
+      ? baseFee
+      : Math.max(1, Math.round((baseFee / baseDuration) * resolvedDuration));
 
     const backendUrl = process.env.BACKEND_URL || "http://localhost:5000";
 
@@ -764,13 +812,14 @@ router.post("/cos", async (req, res) => {
     }).lean();
     if (existingPending) {
       return res.json({
-        success: true,
+        success:         true,
         transactionUuid: existingPending.transactionUuid,
-        amount: existingPending.amount,
-        currency: soultee.currency ?? "NPR",
-        invoiceUrl: `${backendUrl}/api/payments/invoice/${existingPending.transactionUuid}`,
-        message: "You already have a pending Cash on Service request.",
-        isExisting: true,
+        amount:          existingPending.amount,
+        durationMinutes: existingPending.durationMinutes ?? resolvedDuration,
+        currency:        soultee.currency ?? "NPR",
+        invoiceUrl:      `${backendUrl}/api/payments/invoice/${existingPending.transactionUuid}`,
+        message:         "You already have a pending Cash on Service request.",
+        isExisting:      true,
       });
     }
 
@@ -779,23 +828,25 @@ router.post("/cos", async (req, res) => {
     await Payment.create({
       userId,
       soulteeId,
-      planId:   null,
-      planName: "session",
-      amount:   fee,
-      method:   "cos",
+      planId:          null,
+      planName:        "session",
+      durationMinutes: resolvedDuration,
+      amount:          fee,
+      method:          "cos",
       transactionUuid,
       paymentStatus:      "pending",
       verificationStatus: "pending_verification",
     });
 
     return res.json({
-      success: true,
+      success:         true,
       transactionUuid,
-      amount: fee,
-      currency: soultee.currency ?? "NPR",
-      invoiceUrl: `${backendUrl}/api/payments/invoice/${transactionUuid}`,
-      message: "Your Cash on Service request has been submitted successfully.",
-      isExisting: false,
+      amount:          fee,
+      durationMinutes: resolvedDuration,
+      currency:        soultee.currency ?? "NPR",
+      invoiceUrl:      `${backendUrl}/api/payments/invoice/${transactionUuid}`,
+      message:         "Your Cash on Service request has been submitted successfully.",
+      isExisting:      false,
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -952,6 +1003,31 @@ router.get("/pending-cos-check", async (req, res) => {
       amount: payment.amount,
       invoiceUrl: `${backendUrl}/api/payments/invoice/${payment.transactionUuid}`,
       createdAt: payment.createdAt,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// GET /api/payments/cos-status/:transactionUuid
+// Returns current COS verification status for the student's polling.
+router.get("/cos-status/:transactionUuid", async (req, res) => {
+  try {
+    const payment = await Payment.findOne({
+      transactionUuid: req.params.transactionUuid,
+    }).lean();
+    if (!payment) return res.status(404).json({ message: "Payment not found" });
+
+    return res.json({
+      status:             payment.status,
+      verificationStatus: payment.verificationStatus,
+      paymentStatus:      payment.paymentStatus,
+      rejectionReason:    payment.rejectionReason || null,
+      approvedAt:         payment.approvedAt || null,
+      proofUploaded:      !!payment.proofUpload?.url,
+      amount:             payment.amount,
+      durationMinutes:    payment.durationMinutes ?? null,
+      method:             payment.method,
     });
   } catch (err) {
     res.status(500).json({ message: err.message });

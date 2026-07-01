@@ -10,6 +10,7 @@ const paymentSchema = new mongoose.Schema(
       default: null,   // null for dynamic-fee payments (no fixed plan)
     },
     planName: { type: String, default: "session" },
+    durationMinutes: { type: Number, default: null }, // chosen session duration in minutes
     amount: { type: Number, required: true }, // NPR
     method: { type: String, enum: ["esewa", "khalti", "cos"], required: true },
     // Unique UUID generated per payment attempt; used to correlate gateway callbacks

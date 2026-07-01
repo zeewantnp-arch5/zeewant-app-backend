@@ -10,7 +10,7 @@ import Souljar from "../models/souljar.js";
 import Soulpana from "../models/Soulpana.js";
 import { getStudentConnections } from "../services/connectionService.js";
 import { createNotification } from "../services/notificationService.js";
-import { syncProfileToRTDB } from "../config/firebase.js";
+import { syncProfileToRTDB, syncSessionTimerToRTDB } from "../config/firebase.js";
 import SystemSettings from "../models/SystemSettings.js";
 
 const PLATFORM_COMMISSION_RATE = 10; // fallback if DB setting missing
@@ -1278,18 +1278,58 @@ export default function createSoulteeDashboardRoutes() {
   //  START SESSION TIMER
   //  PATCH /api/soultee-dashboard/:soulteeUid/sessions/:sessionId/start
   //  Transitions session to "ongoing" and records startedAt.
+  //  Syncs timer state to Firebase RTDB so both clients get live countdown.
   // ---------------------------------------------------------------------------
   router.patch("/:soulteeUid/sessions/:sessionId/start", async (req, res) => {
     try {
+      const startedAt = new Date();
       const session = await Session.findOneAndUpdate(
         { _id: req.params.sessionId, soulteeFirebaseUid: req.params.soulteeUid, status: "upcoming" },
-        { $set: { status: "ongoing", startedAt: new Date() } },
+        { $set: { status: "ongoing", startedAt } },
         { new: true }
       );
       if (!session) return res.status(404).json({ message: "Session not found or already started" });
 
-      // Auto-complete after session duration expires
       const durationMs = (session.durationMinutes || 10) * 60 * 1000;
+      const expiresAt = new Date(startedAt.getTime() + durationMs);
+
+      // Find the roomId (StudentSoulteeLink._id) for RTDB sync
+      const link = await StudentSoulteeLink.findOne({
+        soulteeFirebaseUid: req.params.soulteeUid,
+        studentFirebaseUid: session.studentFirebaseUid,
+      }).select("_id studentName").lean();
+      const roomId = link?._id?.toString() ?? null;
+
+      // Sync timer to RTDB so both Flutter clients show live countdown
+      if (roomId) {
+        syncSessionTimerToRTDB(roomId, {
+          sessionId:       session._id.toString(),
+          soulteeUid:      req.params.soulteeUid,
+          studentUid:      session.studentFirebaseUid,
+          startedAt:       startedAt.toISOString(),
+          durationMinutes: session.durationMinutes,
+          expiresAt:       expiresAt.toISOString(),
+          status:          "active",
+        }).catch(() => {});
+      }
+
+      // Notify student that session has started
+      createNotification({
+        recipientUid:  session.studentFirebaseUid,
+        recipientRole: "student",
+        type:          "session_started",
+        title:         "Session Started",
+        body:          `Your ${session.durationMinutes}-min session has begun. Chat is now open.`,
+        data: {
+          type:       "session_started",
+          roomId:     roomId ?? "",
+          sessionId:  session._id.toString(),
+          expiresAt:  expiresAt.toISOString(),
+          screen:     "chat",
+        },
+      }).catch(() => {});
+
+      // Auto-complete after session duration expires
       setTimeout(async () => {
         try {
           const s = await Session.findOne({ _id: req.params.sessionId });
@@ -1301,20 +1341,53 @@ export default function createSoulteeDashboardRoutes() {
           s.status = "completed";
           s.soulteeEarnings = soulteeEarnings;
           s.platformEarnings = platformEarnings;
-          // adminPaid remains false — wallet only moves when admin explicitly pays soultee
           await s.save();
+
           // Lock chat when timer expires
-          await StudentSoulteeLink.findOneAndUpdate(
+          const lockedLink = await StudentSoulteeLink.findOneAndUpdate(
             { soulteeFirebaseUid: s.soulteeFirebaseUid, studentFirebaseUid: s.studentFirebaseUid, status: "active" },
             { chatLocked: true },
             { new: true }
           );
+
+          // Update RTDB timer status so both clients know it expired
+          const expiredRoomId = lockedLink?._id?.toString() ?? roomId;
+          if (expiredRoomId) {
+            syncSessionTimerToRTDB(expiredRoomId, {
+              sessionId:       s._id.toString(),
+              soulteeUid:      s.soulteeFirebaseUid,
+              studentUid:      s.studentFirebaseUid,
+              startedAt:       startedAt.toISOString(),
+              durationMinutes: s.durationMinutes,
+              expiresAt:       expiresAt.toISOString(),
+              status:          "completed",
+            }).catch(() => {});
+          }
+
+          // Notify both parties that session ended
+          const soultee = await Soultee.findOne({ firebaseUid: s.soulteeFirebaseUid }).select("name").lean();
+          createNotification({
+            recipientUid:  s.studentFirebaseUid,
+            recipientRole: "student",
+            type:          "session_completed",
+            title:         "Session Completed",
+            body:          "Your session has ended. Request a follow-up or book a new session.",
+            data: { type: "session_completed", roomId: expiredRoomId ?? "", screen: "chat" },
+          }).catch(() => {});
+          createNotification({
+            recipientUid:  s.soulteeFirebaseUid,
+            recipientRole: "soultee",
+            type:          "session_completed",
+            title:         "Session Completed",
+            body:          `Session with ${lockedLink?.studentName || "student"} has ended.`,
+            data: { type: "session_completed", roomId: expiredRoomId ?? "", screen: "chat" },
+          }).catch(() => {});
         } catch (autoErr) {
           console.error("Auto-complete session error:", autoErr.message);
         }
       }, durationMs);
 
-      res.json({ session });
+      res.json({ session, expiresAt: expiresAt.toISOString(), roomId });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
@@ -1323,6 +1396,7 @@ export default function createSoulteeDashboardRoutes() {
   // ---------------------------------------------------------------------------
   //  COMPLETE SESSION & UPDATE WALLET
   //  PATCH /api/soultee-dashboard/:soulteeUid/sessions/:sessionId/complete
+  //  Used when soultee manually ends session early.
   // ---------------------------------------------------------------------------
   router.patch("/:soulteeUid/sessions/:sessionId/complete", async (req, res) => {
     try {
@@ -1341,17 +1415,89 @@ export default function createSoulteeDashboardRoutes() {
       session.status          = "completed";
       session.soulteeEarnings = soulteeEarnings;
       session.platformEarnings= platformEarnings;
-      // adminPaid remains false — wallet only moves when admin explicitly pays soultee
       await session.save();
 
       // Lock chat for this student-soultee pair
-      await StudentSoulteeLink.findOneAndUpdate(
+      const lockedLink = await StudentSoulteeLink.findOneAndUpdate(
         { soulteeFirebaseUid: req.params.soulteeUid, studentFirebaseUid: session.studentFirebaseUid, status: "active" },
         { chatLocked: true },
         { new: true }
       );
+      const roomId = lockedLink?._id?.toString() ?? null;
 
-      res.json({ session, soulteeEarnings, platformEarnings });
+      // Update RTDB timer so student's UI locks immediately
+      if (roomId) {
+        const now = new Date().toISOString();
+        syncSessionTimerToRTDB(roomId, {
+          sessionId:       session._id.toString(),
+          soulteeUid:      req.params.soulteeUid,
+          studentUid:      session.studentFirebaseUid,
+          startedAt:       session.startedAt?.toISOString() ?? now,
+          durationMinutes: session.durationMinutes,
+          expiresAt:       now,
+          status:          "completed",
+        }).catch(() => {});
+      }
+
+      // Notify student
+      createNotification({
+        recipientUid:  session.studentFirebaseUid,
+        recipientRole: "student",
+        type:          "session_completed",
+        title:         "Session Ended",
+        body:          "Your Soultee has ended the session. Request a follow-up or book a new session.",
+        data: { type: "session_completed", roomId: roomId ?? "", screen: "chat" },
+      }).catch(() => {});
+
+      res.json({ session, soulteeEarnings, platformEarnings, roomId });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  //  SESSION STATE — used by both student and soultee chat screen for timer,
+  //  lock status, and session lifecycle info.
+  //  GET /api/soultee-dashboard/session-state/:roomId
+  // ---------------------------------------------------------------------------
+  router.get("/session-state/:roomId", async (req, res) => {
+    try {
+      const { roomId } = req.params;
+      const link = await StudentSoulteeLink.findOne({ _id: roomId }).lean();
+      if (!link) return res.status(404).json({ message: "Room not found" });
+
+      // Latest session for this student-soultee pair
+      const session = await Session.findOne({
+        soulteeFirebaseUid: link.soulteeFirebaseUid,
+        studentFirebaseUid: link.studentFirebaseUid,
+      }).sort({ createdAt: -1 }).lean();
+
+      const now = Date.now();
+      let remainingSeconds = null;
+      let timerExpiresAt = null;
+      let timerStartedAt = null;
+
+      if (session?.status === "ongoing" && session.startedAt) {
+        const durationMs = (session.durationMinutes || 10) * 60 * 1000;
+        const expiresMs  = new Date(session.startedAt).getTime() + durationMs;
+        timerExpiresAt = new Date(expiresMs).toISOString();
+        timerStartedAt = new Date(session.startedAt).toISOString();
+        remainingSeconds = Math.max(0, Math.floor((expiresMs - now) / 1000));
+      }
+
+      res.json({
+        chatLocked:        link.chatLocked === true,
+        sessionStatus:     session?.status ?? "none",
+        sessionId:         session?._id?.toString() ?? null,
+        timerStartedAt,
+        timerDurationMinutes: session?.durationMinutes ?? null,
+        timerExpiresAt,
+        remainingSeconds,
+        sessionFee:        session?.sessionFee ?? null,
+        soulteeUid:        link.soulteeFirebaseUid,
+        studentUid:        link.studentFirebaseUid,
+        studentName:       link.studentName,
+      });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }

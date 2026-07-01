@@ -321,6 +321,26 @@ export async function sendPushNotification(token, title, body, data = {}) {
   }
 }
 
+// ─── Session timer sync ───────────────────────────────────────────────────────
+/**
+ * Write or update session timer state to RTDB at /sessionTimers/{roomId}.
+ * Both student and soultee listen to this path for real-time countdown sync.
+ * @param {string} roomId  — StudentSoulteeLink._id
+ * @param {object} timerData  — { sessionId, soulteeUid, studentUid, startedAt, durationMinutes, expiresAt, status }
+ */
+export async function syncSessionTimerToRTDB(roomId, timerData) {
+  const db = getDB();
+  if (!db) return;
+  try {
+    await db.ref(`sessionTimers/${roomId}`).set({
+      ...timerData,
+      updatedAt: Date.now(),
+    });
+  } catch (err) {
+    console.error("RTDB syncSessionTimer error:", err.message);
+  }
+}
+
 // ─── Broadcast: write new-post signal to RTDB so all student clients update ───
 /**
  * Writes a new-post broadcast to /broadcasts/new_posts/{postId}.
