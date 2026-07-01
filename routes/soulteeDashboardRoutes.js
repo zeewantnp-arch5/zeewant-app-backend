@@ -58,6 +58,35 @@ export default function createSoulteeDashboardRoutes() {
   });
 
   // ---------------------------------------------------------------------------
+  //  SOULTEE — lightweight active connections list (used by Active Sessions UI)
+  //  GET /api/soultee-dashboard/:soulteeUid/active-connections
+  // ---------------------------------------------------------------------------
+  router.get("/:soulteeUid/active-connections", async (req, res) => {
+    try {
+      const links = await StudentSoulteeLink.find({
+        soulteeFirebaseUid: req.params.soulteeUid,
+        status: "active",
+      })
+        .select("studentFirebaseUid studentName acceptedAt")
+        .sort({ acceptedAt: -1 })
+        .lean();
+
+      const sessions = links.map((link) => ({
+        studentFirebaseUid: link.studentFirebaseUid,
+        studentName: link.studentName || "Student",
+        roomId: String(link._id),
+        linkedSince: link.acceptedAt,
+        acceptedAt: link.acceptedAt,
+        otherUserStatus: "offline",
+      }));
+
+      res.json({ sessions, total: sessions.length });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
   //  SOULTEE REGISTRATION / PROFILE SYNC
   //  POST /api/soultee-dashboard/register
   // ---------------------------------------------------------------------------
