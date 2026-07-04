@@ -59,7 +59,7 @@ subscriptionPlanSchema.statics.ensureDefaults = async function () {
         "All advanced chat features",
         "Unlimited sessions",
         "Priority Soultee matching",
-        "AI-powered insights",
+        "Smart insights",
         "24/7 premium support",
       ],
     },
