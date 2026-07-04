@@ -4,6 +4,7 @@ import SoulteeFeedback from "../models/SoulteeFeedback.js";
 import admin from "../config/firebase.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import Session from "../models/Session.js";
+import CallLog from "../models/CallLog.js";
 import SessionWallet from "../models/SessionWallet.js";
 import SessionWithdrawal from "../models/SessionWithdrawal.js";
 import Souljar from "../models/souljar.js";
@@ -389,6 +390,41 @@ export default function createSoulteeDashboardRoutes() {
 
       const totalUnreadMessages = 0;
 
+      // -- Call history (voice/video) counts + average duration --------------
+      const callRows = await CallLog.aggregate([
+        { $match: { $or: [{ callerUid: soulteeUid }, { calleeUid: soulteeUid }] } },
+        { $group: { _id: { callType: "$callType", status: "$status" }, count: { $sum: 1 } } },
+      ]);
+      const callCounts = {
+        voice: { completed: 0, missed: 0, rejected: 0, busy: 0, cancelled: 0 },
+        video: { completed: 0, missed: 0, rejected: 0, busy: 0, cancelled: 0 },
+      };
+      for (const row of callRows) {
+        const { callType, status } = row._id;
+        if (callCounts[callType] && status in callCounts[callType]) {
+          callCounts[callType][status] = row.count;
+        }
+      }
+      const [callDurationAgg] = await CallLog.aggregate([
+        {
+          $match: {
+            $or: [{ callerUid: soulteeUid }, { calleeUid: soulteeUid }],
+            status: "completed",
+          },
+        },
+        { $group: { _id: null, avgDurationSeconds: { $avg: "$durationSeconds" } } },
+      ]);
+      const missedVoiceCalls = callCounts.voice.missed + callCounts.voice.rejected + callCounts.voice.busy;
+      const missedVideoCalls = callCounts.video.missed + callCounts.video.rejected + callCounts.video.busy;
+
+      // -- Completed-session activity windows (Today / Week / Month) ---------
+      const weekStart = new Date(now); weekStart.setDate(now.getDate() - 7);
+      const [completedToday, completedThisWeek, completedThisMonth] = await Promise.all([
+        Session.countDocuments({ soulteeFirebaseUid: soulteeUid, status: "completed", scheduledAt: { $gte: todayStart, $lte: todayEnd } }),
+        Session.countDocuments({ soulteeFirebaseUid: soulteeUid, status: "completed", scheduledAt: { $gte: weekStart } }),
+        Session.countDocuments({ soulteeFirebaseUid: soulteeUid, status: "completed", scheduledAt: { $gte: monthStart } }),
+      ]);
+
       res.json({
         completedSessions:    completedCount,
         pendingSessions:      agg?.pendingSessions ?? 0,
@@ -423,7 +459,19 @@ export default function createSoulteeDashboardRoutes() {
         unreadMessages:         totalUnreadMessages,
         rating:                 soultee?.rating ?? 0,
         totalFeedbacks:         soultee?.totalFeedbacks ?? 0,
-        notificationBadgeCount: pendingRequests + totalUnreadMessages,
+        notificationBadgeCount: pendingRequests + totalUnreadMessages + missedVoiceCalls + missedVideoCalls,
+
+        // Call history (voice/video) — from CallLog
+        callCounts,
+        avgCallDurationSeconds: Math.round(callDurationAgg?.avgDurationSeconds || 0),
+        missedVoiceCalls,
+        missedVideoCalls,
+        missedChatRequests: pendingRequests,
+
+        // Completed-session activity windows
+        completedToday,
+        completedThisWeek,
+        completedThisMonth,
       });
     } catch (err) {
       res.status(500).json({ message: err.message });
@@ -866,6 +914,80 @@ export default function createSoulteeDashboardRoutes() {
       }));
 
       res.json({ sessions: enriched, total: enriched.length });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  //  UNIFIED SESSION HISTORY — Chat (Session) + Voice/Video (CallLog) merged
+  //  GET /api/soultee-dashboard/:soulteeUid/history
+  // ---------------------------------------------------------------------------
+  router.get("/:soulteeUid/history", async (req, res) => {
+    try {
+      const { soulteeUid } = req.params;
+
+      const [sessions, calls] = await Promise.all([
+        Session.find({ soulteeFirebaseUid: soulteeUid, sessionType: "chat" })
+          .sort({ scheduledAt: -1 })
+          .limit(200)
+          .lean(),
+        CallLog.find({ $or: [{ callerUid: soulteeUid }, { calleeUid: soulteeUid }] })
+          .sort({ startedAt: -1 })
+          .limit(200)
+          .lean(),
+      ]);
+
+      const history = [];
+
+      for (const s of sessions) {
+        history.push({
+          id: String(s._id),
+          sessionId: String(s._id),
+          sessionType: "chat",
+          status: s.status,
+          studentName: s.studentName || "Student",
+          studentUid: s.studentFirebaseUid,
+          durationLabel: `${s.durationMinutes || 60} min`,
+          amountLabel: s.sessionFee > 0 ? `NPR ${s.sessionFee}` : "Free",
+          startTime: s.startedAt || s.scheduledAt,
+          endTime: s.updatedAt || null,
+          paymentMethod: null,
+          followUp: null,
+          feedback: null,
+          rating: null,
+          sortAt: s.scheduledAt,
+        });
+      }
+
+      for (const c of calls) {
+        const isCaller = c.callerUid === soulteeUid;
+        const studentUid = isCaller ? c.calleeUid : c.callerUid;
+        const studentName = isCaller ? c.calleeName : c.callerName;
+        const mins = Math.floor((c.durationSeconds || 0) / 60);
+        const secs = (c.durationSeconds || 0) % 60;
+        history.push({
+          id: String(c._id),
+          sessionId: c.callId,
+          sessionType: c.callType,
+          status: c.status,
+          studentName: studentName || "Student",
+          studentUid,
+          durationLabel: c.durationSeconds > 0 ? `${mins} min ${secs} sec` : "—",
+          amountLabel: "Included",
+          startTime: c.startedAt,
+          endTime: c.endedAt,
+          paymentMethod: "Included",
+          followUp: null,
+          feedback: null,
+          rating: null,
+          sortAt: c.startedAt,
+        });
+      }
+
+      history.sort((a, b) => new Date(b.sortAt) - new Date(a.sortAt));
+
+      res.json({ history: history.slice(0, 200), total: history.length });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }

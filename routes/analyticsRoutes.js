@@ -9,6 +9,7 @@ import AuditLog from "../models/AuditLog.js";
 import Payment from "../models/Payment.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import SoulteeApplication from "../models/SoulteeApplication.js";
+import CallLog from "../models/CallLog.js";
 import admin from "../config/firebase.js";
 
 const router = express.Router();
@@ -181,6 +182,28 @@ router.get("/dashboard", requireAdmin, requireAnalyticsAccess, async (req, res) 
       ]),
     ]);
 
+    // -- Platform-wide voice/video call stats (from CallLog) ------------------
+    const [callTypeRows, callDurationAgg] = await Promise.all([
+      CallLog.aggregate([
+        { $group: { _id: { callType: "$callType", status: "$status" }, count: { $sum: 1 } } },
+      ]),
+      CallLog.aggregate([
+        { $match: { status: "completed" } },
+        { $group: { _id: null, avgDurationSeconds: { $avg: "$durationSeconds" } } },
+      ]),
+    ]);
+    let voiceSessions = 0, videoSessions = 0, missedCalls = 0, missedVideos = 0;
+    for (const row of callTypeRows) {
+      const { callType, status } = row._id;
+      if (callType === "voice") {
+        if (status === "completed") voiceSessions += row.count;
+        if (["missed", "rejected", "busy"].includes(status)) missedCalls += row.count;
+      } else if (callType === "video") {
+        if (status === "completed") videoSessions += row.count;
+        if (["missed", "rejected", "busy"].includes(status)) missedVideos += row.count;
+      }
+    }
+
     let totalUsers = totalSoultees + activeLinks;
     try {
       const db = getFirestoreDb();
@@ -209,6 +232,12 @@ router.get("/dashboard", requireAdmin, requireAnalyticsAccess, async (req, res) 
           : 0,
         systemHealth: "healthy",
         uptime: Math.round(process.uptime()),
+        chatSessions: completedSessions,
+        voiceSessions,
+        videoSessions,
+        missedCalls,
+        missedVideos,
+        avgCallDurationSeconds: Math.round(callDurationAgg[0]?.avgDurationSeconds || 0),
       },
       weeklyTrend,
       soulpanaCategories: soulpanaCategories.map(c => ({

@@ -10,15 +10,15 @@ const sessionSchema = new mongoose.Schema(
     durationMinutes: { type: Number, default: 60 },
     sessionFee: { type: Number, default: 0 },
 
-    // upcoming | ongoing | completed | cancelled
+    // upcoming | ongoing | completed | cancelled | missed | rejected | expired
     status: {
       type: String,
-      enum: ["upcoming", "ongoing", "completed", "cancelled"],
+      enum: ["upcoming", "ongoing", "completed", "cancelled", "missed", "rejected", "expired"],
       default: "upcoming",
     },
 
     notes:        { type: String, default: "" },
-    sessionType:  { type: String, default: "chat" }, // chat | video | voice
+    sessionType:  { type: String, enum: ["chat", "voice", "video"], default: "chat" },
     cancelReason: { type: String, default: "" },
 
     // Timer tracking — set when status transitions to "ongoing"

@@ -52,8 +52,8 @@ router.post("/submit", async (req, res) => {
           recipientUid: soulteeUid,
           recipientRole: "soultee",
           type: "prescription_request",
-          title: "New Prescription Request 📋",
-          body: `${displayName} has submitted an emotional prescription request.`,
+          title: "New Emcription Request 📋",
+          body: `${displayName} has submitted an emotional emcription request.`,
           data: { prescriptionId: String(doc._id), studentName: displayName },
         });
         updateNotificationInRTDB(soulteeUid, String(notif._id), {
@@ -80,7 +80,7 @@ router.post("/submit", async (req, res) => {
         recipientUid: userId,
         recipientRole: "student",
         type: "prescription_pending",
-        title: "Prescription Request Sent",
+        title: "Emcription Request Sent",
         body: "Your Soultee is reviewing your request. We'll notify you when it's ready.",
         data: { prescriptionId: String(doc._id) },
       });
@@ -157,7 +157,7 @@ router.put("/fulfill/:id", async (req, res) => {
       { new: true }
     );
 
-    if (!doc) return res.status(404).json({ error: "Prescription not found." });
+    if (!doc) return res.status(404).json({ error: "Emcription not found." });
 
     // Notify student
     try {
@@ -165,8 +165,8 @@ router.put("/fulfill/:id", async (req, res) => {
         recipientUid: doc.userId,
         recipientRole: "student",
         type: "prescription_ready",
-        title: "Your Prescription is Ready 💊",
-        body: "Your Soultee has filled your emotional prescription. Tap to view it.",
+        title: "Your Emcription is Ready 💊",
+        body: "Your Soultee has filled your emotional emcription. Tap to view it.",
         data: { prescriptionId: String(doc._id) },
       });
       updateNotificationInRTDB(doc.userId, String(notif._id), {

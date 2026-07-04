@@ -26,11 +26,15 @@ const notificationSchema = new mongoose.Schema(
         // Soulpost lifecycle
         "post_approved",                 // author receives: post approved & live (student or soultee)
         "post_rejected",                 // author receives: post rejected with reason (student or soultee)
-        // Emotional Prescription
+        // Emotional Prescription (displayed to users as "Emcription")
         "prescription_request",          // soultee receives: student has submitted a prescription request
+        "prescription_pending",          // student receives: their request was sent, awaiting soultee
         "prescription_ready",            // student receives: soultee has filled their prescription
         // Soultee availability broadcast
         "soultee_available",             // student receives: soultee is online and available now
+        // Missed calls (soultee dashboard red badge)
+        "missed_voice_call",             // soultee receives: an incoming voice call went unanswered
+        "missed_video_call",             // soultee receives: an incoming video call went unanswered
       ],
       required: true,
     },
