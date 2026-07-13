@@ -422,12 +422,13 @@ router.get("/financial", requireAdmin, requireAnalyticsAccess, async (req, res) 
     const avgFee        = totalCompleted > 0 ? Math.round(totalRevenue / totalCompleted) : 0;
 
     const transactions = recentSessions.map((s, i) => ({
-      id:     `TXN-${String(totalCompleted - i).padStart(4, "0")}`,
-      userId: `user_${(s.studentFirebaseUid || "").slice(-4) || "????"}`,
-      type:   "Session Payment",
-      amount: s.sessionFee || 0,
-      date:   s.createdAt,
-      status: "Completed",
+      id:        `TXN-${String(totalCompleted - i).padStart(4, "0")}`,
+      sessionId: String(s._id),
+      userId:    `user_${(s.studentFirebaseUid || "").slice(-4) || "????"}`,
+      type:      "Session Payment",
+      amount:    s.sessionFee || 0,
+      date:      s.createdAt,
+      status:    "Completed",
     }));
 
     res.json({
@@ -446,6 +447,67 @@ router.get("/financial", requireAdmin, requireAnalyticsAccess, async (req, res) 
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
+  }
+});
+
+// ── DELETE /api/analytics/financial/transactions ─────────────────────────────
+// Body: { ids: string[] } — hard-deletes the underlying Session record(s) that
+// back each "Session Payment" transaction row shown in Financial Reports.
+router.delete("/financial/transactions", requireAdmin, requireAnalyticsAccess, async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter(Boolean) : [];
+    if (ids.length === 0) {
+      return res.status(400).json({ message: "At least one transaction id is required" });
+    }
+
+    const sessions = await Session.find({ _id: { $in: ids } })
+      .select("sessionFee status createdAt")
+      .lean();
+    if (sessions.length === 0) {
+      return res.status(404).json({ message: "No matching transactions found" });
+    }
+
+    await Session.deleteMany({ _id: { $in: sessions.map((s) => s._id) } });
+
+    // Best-effort admin audit trail for delete operations.
+    try {
+      const adminId = String(
+        req.admin?.id || req.admin?._id || req.admin?.uid || req.admin?.username || "unknown"
+      );
+      const adminName = String(req.admin?.username || req.admin?.name || adminId);
+      const adminRole = String(req.admin?.role || "analyticsAdmin");
+      const ipAddress =
+        req.headers["x-forwarded-for"]?.toString().split(",")[0].trim() ||
+        req.socket?.remoteAddress ||
+        "";
+
+      await AuditLog.create({
+        adminId,
+        adminName,
+        adminRole,
+        action: "transaction_deleted",
+        resourceType: "system",
+        resourceId: sessions.map((s) => String(s._id)).join(","),
+        resourceName: `${sessions.length} transaction(s)`,
+        description: `Deleted ${sessions.length} financial transaction(s)`,
+        metadata: {
+          totalAmount: sessions.reduce((sum, s) => sum + (s.sessionFee || 0), 0),
+        },
+        severity: "warn",
+        ipAddress,
+        userAgent: req.headers["user-agent"]?.toString() || "",
+      });
+    } catch (auditErr) {
+      console.warn("Audit log write failed:", auditErr.message);
+    }
+
+    return res.json({
+      message: "Transaction(s) deleted",
+      deletedCount: sessions.length,
+      ids: sessions.map((s) => String(s._id)),
+    });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
   }
 });
 
