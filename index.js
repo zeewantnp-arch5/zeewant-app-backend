@@ -2,6 +2,8 @@ import "dotenv/config";
 import express from "express";
 import mongoose from "mongoose";
 import cors from "cors";
+import helmet from "helmet";
+import { apiLimiter } from "./middleware/rateLimiters.js";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import connectDB from "./config/db.js";
@@ -41,8 +43,10 @@ const app = express();
 let isAppReady = false;
 
 // ─── Express middleware ───────────────────────────────────────────────────────
+app.use(helmet());
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
+app.use("/api", apiLimiter);
 
 // Return a fast, explicit response while DB/bootstrap tasks are still running.
 app.use("/api", (req, res, next) => {
@@ -100,17 +104,6 @@ app.get("/health", (_req, res) => {
     ready: isAppReady,
     db: dbState === 1 ? "connected" : "degraded",
     ts: Date.now(),
-  });
-});
-
-// Debug endpoint — shows masked env vars
-app.get("/debug/env", (_req, res) => {
-  const mask = (v) => v ? `${v.slice(0, 6)}...${v.slice(-4)} (len=${v.length})` : "NOT SET";
-  res.json({
-    KHALTI_BASE_URL:   process.env.KHALTI_BASE_URL  || "NOT SET",
-    KHALTI_SECRET_KEY: mask(process.env.KHALTI_SECRET_KEY),
-    BACKEND_URL:       process.env.BACKEND_URL       || "NOT SET",
-    NODE_ENV:          process.env.NODE_ENV          || "NOT SET",
   });
 });
 

@@ -3,8 +3,10 @@ import bcrypt from "bcryptjs";
 import admin from "firebase-admin";
 import PhoneAuth from "../models/PhoneAuth.js";
 import BiometricDevice from "../models/BiometricDevice.js";
+import { authLimiter } from "../middleware/rateLimiters.js";
 
 const router = express.Router();
+const BCRYPT_COST = 12;
 
 // ── GET /api/auth/has-password/:phone ─────────────────────────────────────────
 // Returns { hasPassword: bool }
@@ -21,7 +23,7 @@ router.get("/has-password/:phone", async (req, res) => {
 // ── POST /api/auth/set-password ───────────────────────────────────────────────
 // Set password for the first time (caller already authenticated via Firebase OTP).
 // Body: { phone, firebaseUid, password }
-router.post("/set-password", async (req, res) => {
+router.post("/set-password", authLimiter, async (req, res) => {
   try {
     const { phone, firebaseUid, password } = req.body;
     if (!phone || !firebaseUid || !password)
@@ -29,7 +31,7 @@ router.post("/set-password", async (req, res) => {
     if (password.length < 6)
       return res.status(400).json({ message: "Password must be at least 6 characters" });
 
-    const hash = await bcrypt.hash(password, 10);
+    const hash = await bcrypt.hash(password, BCRYPT_COST);
     await PhoneAuth.findOneAndUpdate(
       { phone },
       { phone, firebaseUid, passwordHash: hash },
@@ -44,7 +46,7 @@ router.post("/set-password", async (req, res) => {
 // ── POST /api/auth/login-password ─────────────────────────────────────────────
 // Validate phone + password, return a Firebase custom token.
 // Body: { phone, password }
-router.post("/login-password", async (req, res) => {
+router.post("/login-password", authLimiter, async (req, res) => {
   try {
     const { phone, password } = req.body;
     if (!phone || !password)
@@ -74,7 +76,7 @@ router.post("/login-password", async (req, res) => {
 // ── POST /api/auth/change-password ────────────────────────────────────────────
 // Change existing password — requires old password.
 // Body: { phone, oldPassword, newPassword }
-router.post("/change-password", async (req, res) => {
+router.post("/change-password", authLimiter, async (req, res) => {
   try {
     const { phone, oldPassword, newPassword } = req.body;
     if (!phone || !oldPassword || !newPassword)
@@ -90,7 +92,7 @@ router.post("/change-password", async (req, res) => {
     if (!valid)
       return res.status(401).json({ message: "Old password is incorrect." });
 
-    record.passwordHash = await bcrypt.hash(newPassword, 10);
+    record.passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST);
     await record.save();
     res.json({ message: "Password changed successfully" });
   } catch (err) {
@@ -101,7 +103,7 @@ router.post("/change-password", async (req, res) => {
 // ── POST /api/auth/reset-password ─────────────────────────────────────────────
 // Reset password via OTP (no old password needed — Firebase OTP already verified).
 // Body: { phone, firebaseUid, newPassword }
-router.post("/reset-password", async (req, res) => {
+router.post("/reset-password", authLimiter, async (req, res) => {
   try {
     const { phone, firebaseUid, newPassword } = req.body;
     if (!phone || !firebaseUid || !newPassword)
@@ -109,7 +111,7 @@ router.post("/reset-password", async (req, res) => {
     if (newPassword.length < 6)
       return res.status(400).json({ message: "Password must be at least 6 characters" });
 
-    const hash = await bcrypt.hash(newPassword, 10);
+    const hash = await bcrypt.hash(newPassword, BCRYPT_COST);
     await PhoneAuth.findOneAndUpdate(
       { phone },
       { phone, firebaseUid, passwordHash: hash },
@@ -144,7 +146,7 @@ router.post("/biometric/register", async (req, res) => {
 // ── POST /api/auth/biometric/login ────────────────────────────────────────────
 // Returns a Firebase custom token if UID is registered for biometric.
 // Body: { firebaseUid }
-router.post("/biometric/login", async (req, res) => {
+router.post("/biometric/login", authLimiter, async (req, res) => {
   try {
     const { firebaseUid } = req.body;
     if (!firebaseUid)

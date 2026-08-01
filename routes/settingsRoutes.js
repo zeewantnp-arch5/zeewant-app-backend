@@ -1,34 +1,49 @@
 import express from "express";
-import mongoose from "mongoose";
 import crypto from "crypto";
+import bcrypt from "bcryptjs";
 import UserSettings from "../models/UserSettings.js";
+import { authLimiter } from "../middleware/rateLimiters.js";
 
 const router = express.Router();
 const MAX_RECOVERY_ATTEMPTS = 5;
 const RECOVERY_LOCK_MINUTES = 15;
+const MAX_PASSKEY_ATTEMPTS = 5;
+const PASSKEY_LOCK_MINUTES = 15;
+const BCRYPT_COST = 12;
 
-const hashSecret = (secret) => {
-  const pepper = process.env.JWT_SECRET || "zeewant_shield_pepper";
-  return crypto
-    .createHash("sha256")
-    .update(`${pepper}:${secret}`)
-    .digest("hex");
-};
-
-const hashPasskey = (passkey) => hashSecret(passkey);
-const hashRecoveryCode = (recoveryCode) => hashSecret(recoveryCode);
+const hashPasskey = (passkey) => bcrypt.hash(passkey, BCRYPT_COST);
+const hashRecoveryCode = (recoveryCode) => bcrypt.hash(recoveryCode, BCRYPT_COST);
 
 const generateRecoveryCode = () => {
   // 10 uppercase chars keeps it easy to type but hard to guess.
   return crypto.randomBytes(5).toString("hex").toUpperCase();
 };
 
+// Accounts created before the bcrypt migration still have a legacy
+// SHA-256(pepper:secret) hex digest stored. Verify against either format,
+// and transparently upgrade legacy hashes to bcrypt on first successful use.
+const LEGACY_PEPPER = process.env.JWT_SECRET || "zeewant_shield_pepper";
+const legacyHash = (secret) =>
+  crypto.createHash("sha256").update(`${LEGACY_PEPPER}:${secret}`).digest("hex");
+
+async function verifySecret(plain, storedHash) {
+  if (!storedHash) return { valid: false };
+  if (storedHash.startsWith("$2")) {
+    return { valid: await bcrypt.compare(plain, storedHash) };
+  }
+  const candidate = legacyHash(plain);
+  const a = Buffer.from(candidate, "hex");
+  const b = Buffer.from(storedHash, "hex");
+  const valid = a.length === b.length && crypto.timingSafeEqual(a, b);
+  return { valid, needsRehash: valid };
+}
+
 // ─── GET /api/settings/shield/:userId ────────────────────────────────────────
 // Returns { shieldEnabled: bool, hasPasskey: bool, hasRecoveryCode: bool }.
 router.get("/shield/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
+    if (!userId || typeof userId !== "string") {
       return res.status(400).json({ message: "Invalid userId" });
     }
 
@@ -49,7 +64,7 @@ router.get("/shield/:userId", async (req, res) => {
 router.put("/shield/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
+    if (!userId || typeof userId !== "string") {
       return res.status(400).json({ message: "Invalid userId" });
     }
 
@@ -72,10 +87,10 @@ router.put("/shield/:userId", async (req, res) => {
 
 // ─── PUT /api/settings/shield/passkey/:userId ───────────────────────────────
 // Body: { passkey: "1234" }
-router.put("/shield/passkey/:userId", async (req, res) => {
+router.put("/shield/passkey/:userId", authLimiter, async (req, res) => {
   try {
     const { userId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
+    if (!userId || typeof userId !== "string") {
       return res.status(400).json({ message: "Invalid userId" });
     }
 
@@ -84,17 +99,18 @@ router.put("/shield/passkey/:userId", async (req, res) => {
       return res.status(400).json({ message: "Passkey must be 4 digits" });
     }
 
-    const passkeyHash = hashPasskey(passkey);
     const recoveryCode = generateRecoveryCode();
     const settings = await UserSettings.findOneAndUpdate(
       { userId },
       {
-        shieldPasskeyHash: passkeyHash,
+        shieldPasskeyHash: await hashPasskey(passkey),
         shieldPasskeySetAt: new Date(),
-        shieldRecoveryCodeHash: hashRecoveryCode(recoveryCode),
+        shieldRecoveryCodeHash: await hashRecoveryCode(recoveryCode),
         shieldRecoveryCodeSetAt: new Date(),
         shieldRecoveryFailedAttempts: 0,
         shieldRecoveryLockedUntil: null,
+        shieldPasskeyFailedAttempts: 0,
+        shieldPasskeyLockedUntil: null,
         shieldEnabled: true,
       },
       { new: true, upsert: true }
@@ -116,10 +132,10 @@ router.put("/shield/passkey/:userId", async (req, res) => {
 
 // ─── POST /api/settings/shield/verify/:userId ───────────────────────────────
 // Body: { passkey: "1234" }
-router.post("/shield/verify/:userId", async (req, res) => {
+router.post("/shield/verify/:userId", authLimiter, async (req, res) => {
   try {
     const { userId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
+    if (!userId || typeof userId !== "string") {
       return res.status(400).json({ message: "Invalid userId" });
     }
 
@@ -133,8 +149,37 @@ router.post("/shield/verify/:userId", async (req, res) => {
       return res.status(404).json({ message: "Passkey not set" });
     }
 
-    const valid = settings.shieldPasskeyHash === hashPasskey(passkey);
-    res.json({ valid });
+    if (
+      settings.shieldPasskeyLockedUntil &&
+      settings.shieldPasskeyLockedUntil > new Date()
+    ) {
+      return res.status(429).json({
+        message: "Too many attempts. Please try again later.",
+        lockedUntil: settings.shieldPasskeyLockedUntil,
+      });
+    }
+
+    const { valid, needsRehash } = await verifySecret(passkey, settings.shieldPasskeyHash);
+
+    if (!valid) {
+      const nextAttempts = (settings.shieldPasskeyFailedAttempts || 0) + 1;
+      settings.shieldPasskeyFailedAttempts = nextAttempts;
+      if (nextAttempts >= MAX_PASSKEY_ATTEMPTS) {
+        settings.shieldPasskeyFailedAttempts = 0;
+        settings.shieldPasskeyLockedUntil = new Date(
+          Date.now() + PASSKEY_LOCK_MINUTES * 60 * 1000
+        );
+      }
+      await settings.save();
+      return res.json({ valid: false });
+    }
+
+    settings.shieldPasskeyFailedAttempts = 0;
+    settings.shieldPasskeyLockedUntil = null;
+    if (needsRehash) settings.shieldPasskeyHash = await hashPasskey(passkey);
+    await settings.save();
+
+    res.json({ valid: true });
   } catch (err) {
     res.status(500).json({ message: "Server error", error: err.message });
   }
@@ -142,10 +187,10 @@ router.post("/shield/verify/:userId", async (req, res) => {
 
 // ─── POST /api/settings/shield/recover/:userId ──────────────────────────────
 // Body: { recoveryCode: "AB12CD34EF", newPasskey: "1234" }
-router.post("/shield/recover/:userId", async (req, res) => {
+router.post("/shield/recover/:userId", authLimiter, async (req, res) => {
   try {
     const { userId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
+    if (!userId || typeof userId !== "string") {
       return res.status(400).json({ message: "Invalid userId" });
     }
 
@@ -175,7 +220,7 @@ router.post("/shield/recover/:userId", async (req, res) => {
     }
 
     const normalizedRecoveryCode = recoveryCode.trim().toUpperCase();
-    const valid = settings.shieldRecoveryCodeHash === hashRecoveryCode(normalizedRecoveryCode);
+    const { valid } = await verifySecret(normalizedRecoveryCode, settings.shieldRecoveryCodeHash);
 
     if (!valid) {
       const nextAttempts = (settings.shieldRecoveryFailedAttempts || 0) + 1;
@@ -193,12 +238,14 @@ router.post("/shield/recover/:userId", async (req, res) => {
     }
 
     const rotatedRecoveryCode = generateRecoveryCode();
-    settings.shieldPasskeyHash = hashPasskey(newPasskey);
+    settings.shieldPasskeyHash = await hashPasskey(newPasskey);
     settings.shieldPasskeySetAt = new Date();
-    settings.shieldRecoveryCodeHash = hashRecoveryCode(rotatedRecoveryCode);
+    settings.shieldRecoveryCodeHash = await hashRecoveryCode(rotatedRecoveryCode);
     settings.shieldRecoveryCodeSetAt = new Date();
     settings.shieldRecoveryFailedAttempts = 0;
     settings.shieldRecoveryLockedUntil = null;
+    settings.shieldPasskeyFailedAttempts = 0;
+    settings.shieldPasskeyLockedUntil = null;
     settings.shieldEnabled = true;
     await settings.save();
 
@@ -218,10 +265,10 @@ router.post("/shield/recover/:userId", async (req, res) => {
 
 // ─── POST /api/settings/shield/recovery-code/rotate/:userId ─────────────────
 // Body: { passkey: "1234" }
-router.post("/shield/recovery-code/rotate/:userId", async (req, res) => {
+router.post("/shield/recovery-code/rotate/:userId", authLimiter, async (req, res) => {
   try {
     const { userId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
+    if (!userId || typeof userId !== "string") {
       return res.status(400).json({ message: "Invalid userId" });
     }
 
@@ -235,13 +282,14 @@ router.post("/shield/recovery-code/rotate/:userId", async (req, res) => {
       return res.status(404).json({ message: "Passkey not set" });
     }
 
-    const validPasskey = settings.shieldPasskeyHash === hashPasskey(passkey);
+    const { valid: validPasskey, needsRehash } = await verifySecret(passkey, settings.shieldPasskeyHash);
     if (!validPasskey) {
       return res.status(401).json({ message: "Invalid passkey" });
     }
+    if (needsRehash) settings.shieldPasskeyHash = await hashPasskey(passkey);
 
     const recoveryCode = generateRecoveryCode();
-    settings.shieldRecoveryCodeHash = hashRecoveryCode(recoveryCode);
+    settings.shieldRecoveryCodeHash = await hashRecoveryCode(recoveryCode);
     settings.shieldRecoveryCodeSetAt = new Date();
     settings.shieldRecoveryFailedAttempts = 0;
     settings.shieldRecoveryLockedUntil = null;
@@ -261,10 +309,10 @@ router.post("/shield/recovery-code/rotate/:userId", async (req, res) => {
 
 // ─── DELETE /api/settings/shield/passkey/:userId ────────────────────────────
 // Body: { passkey: "1234" }
-router.delete("/shield/passkey/:userId", async (req, res) => {
+router.delete("/shield/passkey/:userId", authLimiter, async (req, res) => {
   try {
     const { userId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
+    if (!userId || typeof userId !== "string") {
       return res.status(400).json({ message: "Invalid userId" });
     }
 
@@ -278,7 +326,7 @@ router.delete("/shield/passkey/:userId", async (req, res) => {
       return res.status(404).json({ message: "Passkey not set" });
     }
 
-    const valid = settings.shieldPasskeyHash === hashPasskey(passkey);
+    const { valid } = await verifySecret(passkey, settings.shieldPasskeyHash);
     if (!valid) {
       return res.status(401).json({ message: "Invalid passkey" });
     }
@@ -289,6 +337,8 @@ router.delete("/shield/passkey/:userId", async (req, res) => {
     settings.shieldRecoveryCodeSetAt = null;
     settings.shieldRecoveryFailedAttempts = 0;
     settings.shieldRecoveryLockedUntil = null;
+    settings.shieldPasskeyFailedAttempts = 0;
+    settings.shieldPasskeyLockedUntil = null;
     settings.shieldEnabled = false;
     await settings.save();
 
