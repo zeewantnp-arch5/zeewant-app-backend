@@ -13,8 +13,8 @@ import { buildEsewaFormParams, verifyEsewaCallback } from "../services/esewaServ
 import { initiateKhaltiPayment, verifyKhaltiPayment } from "../services/khaltiService.js";
 import { sendPushNotification } from "../services/fcmService.js";
 import PDFDocument from "pdfkit";
-import JWT_SECRET from "../config/jwtSecret.js";
 
+const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
 
 function requireAdminJwt(req, res, next) {
   const auth = req.headers["authorization"] || "";

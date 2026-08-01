@@ -7,9 +7,9 @@ import PrivacyRequest from "../models/PrivacyRequest.js";
 import Soultee from "../models/Soultee.js";
 import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import Session from "../models/Session.js";
-import JWT_SECRET from "../config/jwtSecret.js";
 
 const router = express.Router();
+const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
 
 // ─── Auth middleware ──────────────────────────────────────────────────────────
 const requireAdmin = (req, res, next) => {

@@ -7,9 +7,9 @@ import PushNotificationLog from "../models/PushNotificationLog.js";
 import Souljar          from "../models/souljar.js";
 import Session          from "../models/Session.js";
 import FCMToken         from "../models/FCMToken.js";
-import JWT_SECRET from "../config/jwtSecret.js";
 
 const router     = express.Router();
+const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
 
 // ─── Auth middleware ───────────────────────────────────────────────────────────
 

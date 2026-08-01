@@ -1,7 +1,6 @@
 import express from "express";
 import FCMToken from "../models/FCMToken.js";
 import { storeOTP, verifyOTP, sendPushNotification } from "../config/firebase.js";
-import { authLimiter, otpSendLimiter } from "../middleware/rateLimiters.js";
 
 const router = express.Router();
 
@@ -13,7 +12,7 @@ const router = express.Router();
 //  POST /api/otp/send
 //  Body: { uid, purpose? }   purpose e.g. "login", "profile_update" (optional label)
 // ─────────────────────────────────────────────────────────────────────────────
-router.post("/send", otpSendLimiter, async (req, res) => {
+router.post("/send", async (req, res) => {
   try {
     const { uid, purpose = "verification" } = req.body;
     if (!uid) return res.status(400).json({ message: "uid is required" });
@@ -53,7 +52,7 @@ router.post("/send", otpSendLimiter, async (req, res) => {
 //  POST /api/otp/verify
 //  Body: { uid, otp }
 // ─────────────────────────────────────────────────────────────────────────────
-router.post("/verify", authLimiter, async (req, res) => {
+router.post("/verify", async (req, res) => {
   try {
     const { uid, otp } = req.body;
     if (!uid || !otp) return res.status(400).json({ message: "uid and otp are required" });

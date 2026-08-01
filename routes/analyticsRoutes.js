@@ -11,9 +11,9 @@ import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import SoulteeApplication from "../models/SoulteeApplication.js";
 import CallLog from "../models/CallLog.js";
 import admin from "../config/firebase.js";
-import JWT_SECRET from "../config/jwtSecret.js";
 
 const router = express.Router();
+const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
 const ANALYTICS_ALLOWED_ROLES = new Set(["superAdmin", "analyticsAdmin"]);
 
 // ─── Auth middleware ──────────────────────────────────────────────────────────

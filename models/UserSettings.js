@@ -4,7 +4,7 @@ import mongoose from "mongoose";
 const userSettingsSchema = new mongoose.Schema(
   {
     userId: {
-      type: String,
+      type: mongoose.Schema.Types.ObjectId,
       required: true,
       unique: true,
     },
@@ -35,14 +35,6 @@ const userSettingsSchema = new mongoose.Schema(
       default: 0,
     },
     shieldRecoveryLockedUntil: {
-      type: Date,
-      default: null,
-    },
-    shieldPasskeyFailedAttempts: {
-      type: Number,
-      default: 0,
-    },
-    shieldPasskeyLockedUntil: {
       type: Date,
       default: null,
     },

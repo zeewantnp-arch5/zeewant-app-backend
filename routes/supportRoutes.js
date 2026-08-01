@@ -3,9 +3,9 @@ import jwt from "jsonwebtoken";
 import SupportTicket  from "../models/SupportTicket.js";
 import UserComplaint  from "../models/UserComplaint.js";
 import UserFeedback   from "../models/UserFeedback.js";
-import JWT_SECRET from "../config/jwtSecret.js";
 
 const router = express.Router();
+const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
 
 // ── Auth middleware ────────────────────────────────────────────────────────────
 function requireAdmin(req, res, next) {

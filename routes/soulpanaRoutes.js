@@ -2,7 +2,6 @@
 import multer from "multer";
 import path from "path";
 import fs from "fs";
-import { fileTypeFromFile } from "file-type";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
 import Soulpana from "../models/Soulpana.js";
@@ -39,33 +38,6 @@ const upload = multer({
   },
 });
 
-// The extension-only check above only rejects an obviously wrong filename —
-// it doesn't stop someone renaming a malicious file to end in ".jpg". After
-// Multer writes each file to disk, sniff its real magic bytes and reject
-// anything whose actual content doesn't match an allowed type.
-const ALLOWED_REAL_MIMES = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/gif",
-  "image/webp",
-  "image/heic",
-  "image/heif",
-  "application/pdf",
-  "application/x-cfb", // legacy .doc (OLE compound file container)
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
-]);
-
-async function verifyUploadedFileContents(files) {
-  for (const file of files) {
-    const detected = await fileTypeFromFile(file.path);
-    if (!detected || !ALLOWED_REAL_MIMES.has(detected.mime)) {
-      await Promise.all(files.map((f) => fs.promises.unlink(f.path).catch(() => {})));
-      return `"${file.originalname}" was rejected — its content doesn't match an allowed file type.`;
-    }
-  }
-  return null;
-}
-
 // -- Conditionally apply multer only when request is multipart ----------------
 // Wraps Multer so errors (bad file type, size exceeded, disk failure) are
 // returned as clean JSON 400 responses instead of falling through to
@@ -75,27 +47,18 @@ function maybeMultipart(req, res, next) {
     return next(); // JSON body — express.json() already parsed it
   }
 
-  upload.array("attachments", 5)(req, res, async (err) => {
-    if (err) {
-      // Multer-specific errors (file type, size limit)
-      if (err.code === "LIMIT_FILE_SIZE") {
-        return res.status(400).json({ message: "File too large. Maximum size is 10 MB per file." });
-      }
-      if (err.code === "LIMIT_FILE_COUNT") {
-        return res.status(400).json({ message: "Too many files. Maximum is 5 attachments." });
-      }
-      // fileFilter rejection or any other Multer/disk error
-      return res.status(400).json({ message: err.message || "File upload failed." });
-    }
+  upload.array("attachments", 5)(req, res, (err) => {
+    if (!err) return next();
 
-    if (req.files?.length) {
-      const rejectionMessage = await verifyUploadedFileContents(req.files);
-      if (rejectionMessage) {
-        return res.status(400).json({ message: rejectionMessage });
-      }
+    // Multer-specific errors (file type, size limit)
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res.status(400).json({ message: "File too large. Maximum size is 10 MB per file." });
     }
-
-    next();
+    if (err.code === "LIMIT_FILE_COUNT") {
+      return res.status(400).json({ message: "Too many files. Maximum is 5 attachments." });
+    }
+    // fileFilter rejection or any other Multer/disk error
+    return res.status(400).json({ message: err.message || "File upload failed." });
   });
 }
 

@@ -11,7 +11,6 @@ import StudentSoulteeLink from "../models/StudentSoulteeLink.js";
 import AdminUser, { ADMIN_ROLES } from "../models/AdminUser.js";
 import SoulteeApplication, { computeCompletenessScore, computeRiskFlags } from "../models/SoulteeApplication.js";
 import AuditLog from "../models/AuditLog.js";
-import { authLimiter } from "../middleware/rateLimiters.js";
 import SystemSettings from "../models/SystemSettings.js";
 import FCMToken from "../models/FCMToken.js";
 import Notification from "../models/Notification.js";
@@ -24,12 +23,9 @@ import admin, {
   removePostFromRTDB,
   syncBroadcastToRTDB,
   sendTopicNotification,
-  setForceLogout,
-  clearForceLogout,
 } from "../config/firebase.js";
 import { sendResetCodeEmail } from "../services/emailService.js";
 import { notifyPostAuthor } from "./postRoutes.js";
-import JWT_SECRET from "../config/jwtSecret.js";
 
 // Multer: store in memory so we can stream to Firebase Storage
 const upload = multer({
@@ -42,6 +38,7 @@ const upload = multer({
 });
 
 const router = express.Router();
+const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
 const FORGOT_PASSWORD_TRACE_MAX = 40;
 const forgotPasswordTrace = [];
 
@@ -136,7 +133,7 @@ const requireRole = (...roles) => (req, res, next) => {
 // ─── POST /api/admin/login ────────────────────────────────────────────────────
 // Flow: look up AdminUser in MongoDB → verify bcrypt → return JWT with role.
 // Falls back to env-based single admin for first-run / backwards-compat.
-router.post("/login", authLimiter, async (req, res) => {
+router.post("/login", async (req, res) => {
   const { username, password, role } = req.body;
 
   if (!username || !password) {
@@ -228,7 +225,7 @@ router.post("/login", authLimiter, async (req, res) => {
 
 // ─── POST /api/admin/seed ─────────────────────────────────────────────────────
 // One-time: create an admin account via header-based secret (scripts/createAdmin.js).
-router.post("/seed", authLimiter, async (req, res) => {
+router.post("/seed", async (req, res) => {
   const secret = req.headers["x-setup-secret"];
   if (!secret || secret !== process.env.ADMIN_SETUP_SECRET) {
     return res.status(403).json({ message: "Forbidden — set ADMIN_SETUP_SECRET in .env" });
@@ -271,7 +268,7 @@ router.post("/seed", authLimiter, async (req, res) => {
 // ─── POST /api/admin/register ─────────────────────────────────────────────────
 // Self-registration from the admin panel UI.
 // Requires setupKey in the body matching ADMIN_SETUP_SECRET.
-router.post("/register", authLimiter, async (req, res) => {
+router.post("/register", async (req, res) => {
   const { name, email, password, role, setupKey } = req.body;
 
   if (!name || !email || !password || !role || !setupKey) {
@@ -1191,7 +1188,6 @@ router.patch(
       await db.collection("users").doc(req.params.uid).update({
         blocked: true, blockedAt: new Date().toISOString(), blockedReason: reason,
       });
-      await setForceLogout(req.params.uid, reason || "Account blocked");
       await writeAuditLog(req, {
         action: "user_blocked", resourceType: "user", resourceId: req.params.uid,
         description: `User ${req.params.uid} blocked. Reason: ${reason || "not specified"}`,
@@ -1215,7 +1211,6 @@ router.patch(
       await db.collection("users").doc(req.params.uid).update({
         blocked: false, blockedAt: null, blockedReason: null,
       });
-      await clearForceLogout(req.params.uid);
       await writeAuditLog(req, {
         action: "user_unblocked", resourceType: "user", resourceId: req.params.uid,
         description: `User ${req.params.uid} unblocked`,
@@ -1243,7 +1238,6 @@ router.delete(
         return res.status(404).json({ message: "User not found" });
       }
 
-      await setForceLogout(uid, "Account deleted");
       await userRef.delete();
 
       // Best-effort deletion from Firebase Auth (may fail if auth user does not exist).

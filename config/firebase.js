@@ -49,45 +49,6 @@ function getDB() {
   }
 }
 
-// ─── Force logout ──────────────────────────────────────────────────────────────
-/**
- * Flag a user for immediate sign-out on their device (admin block/delete) at
- * /forceLogout/{uid}. The app holds a live listener on this path so it takes
- * effect right away instead of waiting for the cached ID token to expire.
- * Also revokes refresh tokens so a fresh sign-in attempt is rejected too.
- * @param {string} uid
- * @param {string} reason
- */
-export async function setForceLogout(uid, reason) {
-  const db = getDB();
-  if (db) {
-    try {
-      await db.ref(`forceLogout/${uid}`).set({ reason, at: Date.now() });
-    } catch (err) {
-      console.error("RTDB setForceLogout error:", err.message);
-    }
-  }
-  try {
-    await admin.auth().revokeRefreshTokens(uid);
-  } catch (err) {
-    console.warn("revokeRefreshTokens error (non-fatal):", err.message);
-  }
-}
-
-/**
- * Clear the force-logout flag (e.g. on unblock).
- * @param {string} uid
- */
-export async function clearForceLogout(uid) {
-  const db = getDB();
-  if (!db) return;
-  try {
-    await db.ref(`forceLogout/${uid}`).remove();
-  } catch (err) {
-    console.error("RTDB clearForceLogout error:", err.message);
-  }
-}
-
 // ─── Profile sync ─────────────────────────────────────────────────────────────
 /**
  * Sync a user profile to Firebase RTDB at /profiles/{uid}
