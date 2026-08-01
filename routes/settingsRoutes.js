@@ -1,5 +1,4 @@
 import express from "express";
-import mongoose from "mongoose";
 import crypto from "crypto";
 import UserSettings from "../models/UserSettings.js";
 
@@ -28,7 +27,7 @@ const generateRecoveryCode = () => {
 router.get("/shield/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
+    if (!userId || typeof userId !== "string") {
       return res.status(400).json({ message: "Invalid userId" });
     }
 
@@ -49,7 +48,7 @@ router.get("/shield/:userId", async (req, res) => {
 router.put("/shield/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
+    if (!userId || typeof userId !== "string") {
       return res.status(400).json({ message: "Invalid userId" });
     }
 
@@ -75,7 +74,7 @@ router.put("/shield/:userId", async (req, res) => {
 router.put("/shield/passkey/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
+    if (!userId || typeof userId !== "string") {
       return res.status(400).json({ message: "Invalid userId" });
     }
 
@@ -119,7 +118,7 @@ router.put("/shield/passkey/:userId", async (req, res) => {
 router.post("/shield/verify/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
+    if (!userId || typeof userId !== "string") {
       return res.status(400).json({ message: "Invalid userId" });
     }
 
@@ -145,7 +144,7 @@ router.post("/shield/verify/:userId", async (req, res) => {
 router.post("/shield/recover/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
+    if (!userId || typeof userId !== "string") {
       return res.status(400).json({ message: "Invalid userId" });
     }
 
@@ -221,7 +220,7 @@ router.post("/shield/recover/:userId", async (req, res) => {
 router.post("/shield/recovery-code/rotate/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
+    if (!userId || typeof userId !== "string") {
       return res.status(400).json({ message: "Invalid userId" });
     }
 
@@ -264,7 +263,7 @@ router.post("/shield/recovery-code/rotate/:userId", async (req, res) => {
 router.delete("/shield/passkey/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
+    if (!userId || typeof userId !== "string") {
       return res.status(400).json({ message: "Invalid userId" });
     }
 
