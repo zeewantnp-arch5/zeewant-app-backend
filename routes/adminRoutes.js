@@ -23,6 +23,8 @@ import admin, {
   removePostFromRTDB,
   syncBroadcastToRTDB,
   sendTopicNotification,
+  setForceLogout,
+  clearForceLogout,
 } from "../config/firebase.js";
 import { sendResetCodeEmail } from "../services/emailService.js";
 import { notifyPostAuthor } from "./postRoutes.js";
@@ -1188,6 +1190,7 @@ router.patch(
       await db.collection("users").doc(req.params.uid).update({
         blocked: true, blockedAt: new Date().toISOString(), blockedReason: reason,
       });
+      await setForceLogout(req.params.uid, reason || "Account blocked");
       await writeAuditLog(req, {
         action: "user_blocked", resourceType: "user", resourceId: req.params.uid,
         description: `User ${req.params.uid} blocked. Reason: ${reason || "not specified"}`,
@@ -1211,6 +1214,7 @@ router.patch(
       await db.collection("users").doc(req.params.uid).update({
         blocked: false, blockedAt: null, blockedReason: null,
       });
+      await clearForceLogout(req.params.uid);
       await writeAuditLog(req, {
         action: "user_unblocked", resourceType: "user", resourceId: req.params.uid,
         description: `User ${req.params.uid} unblocked`,
@@ -1238,6 +1242,7 @@ router.delete(
         return res.status(404).json({ message: "User not found" });
       }
 
+      await setForceLogout(uid, "Account deleted");
       await userRef.delete();
 
       // Best-effort deletion from Firebase Auth (may fail if auth user does not exist).
